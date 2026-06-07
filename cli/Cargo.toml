@@ -1,0 +1,13 @@
+[package]
+name = "hiker-charts-cli"
+edition.workspace = true
+version.workspace = true
+description = "Headless hiker-charts renderer: spec.yaml + data.csv -> SVG. Snapshot-test and batch-export driver."
+
+[[bin]]
+name = "hiker-charts"
+path = "src/main.rs"
+
+[dependencies]
+hiker-charts-core.workspace = true
+hiker-charts-plotters.workspace = true

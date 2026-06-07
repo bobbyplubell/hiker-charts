@@ -1,0 +1,9 @@
+[package]
+name = "hiker-charts-plotters"
+edition.workspace = true
+version.workspace = true
+description = "plotters-backed SVG Backend impl for hiker-charts. The only crate that imports plotters (the swappable-renderer seam, SPEC 4.1)."
+
+[dependencies]
+hiker-charts-core.workspace = true
+plotters.workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "hiker-charts-core"
+edition.workspace = true
+version.workspace = true
+description = "UI- and renderer-agnostic core for hiker-charts: the ChartSpec grammar-of-graphics model, CSV typing/coercion, the Backend trait, content hashing, and host interfaces. No plotters, no egui."
+
+[dependencies]
+serde.workspace = true
+serde_yml.workspace = true
+csv.workspace = true

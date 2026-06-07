@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["core", "backend-plotters", "cli"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+hiker-charts-core = { path = "core" }
+hiker-charts-plotters = { path = "backend-plotters" }
+serde = { version = "1", features = ["derive"] }
+serde_yml = "0.0.12"
+csv = "1"
+# SVG-only: no `ttf` (resvg draws glyphs host-side) and no `chrono` (core does its
+# own ISO date parsing). Mirrors ../notes/hiker-render/chart minus chrono.
+plotters = { version = "0.3.7", default-features = false, features = [
+    "svg_backend",
+    "line_series",
+    "point_series",
+    "area_series",
+    "histogram",
+] }
