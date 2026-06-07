@@ -17,4 +17,5 @@ RUST_ROOTS = [
     "backend-plotters/src",
     "cli/src",
     "gui/src",
+    "demo/src",
 ]

@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SCAN_DIRS = ("core", "backend-plotters", "cli", "gui", "scripts")
+SCAN_DIRS = ("core", "backend-plotters", "cli", "gui", "demo", "scripts")
 SCAN_EXTS = (".rs", ".py", ".sh", ".toml")
 SELF = Path(__file__).resolve()
 

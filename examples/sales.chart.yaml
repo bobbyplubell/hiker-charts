@@ -1,0 +1,6 @@
+mark: line
+x: { field: month, type: temporal }
+y: [revenue, profit]
+config:
+  title: Monthly sales
+  legend: true

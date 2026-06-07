@@ -1,0 +1,11 @@
+[package]
+name = "hiker-charts-gui"
+edition.workspace = true
+version.workspace = true
+description = "egui comfy builder + interactive preview for hiker-charts. Pure egui panel (no eframe/winit): the host owns windowing. Gestures consumed via egui InputState, mirroring hiker-canvas."
+
+[dependencies]
+hiker-charts-core.workspace = true
+hiker-charts-plotters.workspace = true
+egui.workspace = true
+resvg.workspace = true

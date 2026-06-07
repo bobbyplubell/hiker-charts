@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "backend-plotters", "cli"]
+members = ["core", "backend-plotters", "cli", "gui", "demo"]
 
 [workspace.package]
 edition = "2024"
@@ -9,6 +9,7 @@ version = "0.1.0"
 [workspace.dependencies]
 hiker-charts-core = { path = "core" }
 hiker-charts-plotters = { path = "backend-plotters" }
+hiker-charts-gui = { path = "gui" }
 serde = { version = "1", features = ["derive"] }
 serde_yml = "0.0.12"
 csv = "1"
@@ -21,3 +22,13 @@ plotters = { version = "0.3.7", default-features = false, features = [
     "area_series",
     "histogram",
 ] }
+egui = "0.32"
+resvg = "0.47.0"
+
+# Mirrors Hiker (../notes): a fork of winit 0.30.13 with upstream master's Wayland touchpad
+# pinch cherry-picked in (zwp_pointer_gestures_v1 -> WindowEvent::PinchGesture). egui-winit
+# maps PinchGesture -> zoom, so the `demo` preview gets Wayland pinch/magnify for free, the
+# same way it will inside the app. Only the `demo` crate pulls winit (via eframe); the core /
+# backend / cli / gui crates have no winit dep.
+[patch.crates-io]
+winit = { git = "ssh://git@github.com/bobbyplubell/winit.git", branch = "wayland-pinch-magnify" }

@@ -1,0 +1,16 @@
+**/__pycache__/
+references/
+target/
+node_modules/
+dist/
+ui/src-tauri/gen/
+scratch/
+.venv/
+
+.claude/*
+
+.hiker/
+todo.md
+*.swp
+*.swo
+.DS_Store

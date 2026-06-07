@@ -318,30 +318,85 @@ Small; this is also the snapshot-test driver.
 
 ---
 
-## 6. `gui` — comfy builder (DEFERRED, design captured)
+## 6. `gui` — comfy builder + interactive preview
 
-Not built in the first implementation pass; documented so it slots in cleanly. Depends on
-`core` + `backend-plotters` + `egui` + `resvg`.
+Depends on `core` + `backend-plotters` + **`egui` 0.32** + **`resvg` 0.47** (pinned to match
+Hiker). **No `eframe`/`winit` dependency** — this is a pure egui *panel* layer; the host owns
+the window and event loop. Gestures are consumed via egui's `InputState`, the same way
+`hiker-canvas` does, so the host's forked-winit pinch/magnify support flows in for free (see
+the `hiker-egui-winit-fork` memory). Module layout (real `//!` docs, ≥20 non-comment lines):
 
-- **`BuilderState`** holds a `ChartSpec`, the resolved `Table` (for column lists), and the
-  last `RenderOutput` (cached by `content_hash`). Pure state + transitions could live in
-  `core` later (SPEC §9) if a non-egui host wants them; v1 keeps them in `gui`.
-- **Panel**: egui `ComboBox` for mark; `x`/`color` field pickers populated from
-  `table.columns` (can't mistype a column); a `y` multiselect; per-field type pickers
-  defaulting to the inferred type; title field; legend checkbox; a "series from: columns /
-  values in a column" toggle that writes the wide vs long encoding (SPEC §2.3.1).
-- **Preview**: rasterize `PlottersSvg` output via resvg -> egui texture, re-rendered only when
-  `content_hash` changes (SPEC §7).
-- **Export (v1 of gui)**: "Copy as ```chart block" = `spec.to_yaml()` (SPEC §8.2).
-- **Open-in-editor / save-back (SPEC §8.3)**: the builder carries provenance
-  `{ note id, byte_range }` (the byte range the host's fence detector reports). Save =
-  `to_yaml()` -> splice into that byte range (re-attaching an inline CSV body verbatim) ->
-  host writes the note. The splice + note write is **host-side** (Hiker's `app`/`editor`),
-  not this crate; `gui` only emits the new block text + the target range.
+```
+gui/src/
+  lib.rs        # crate doc + `pub mod`
+  model.rs      # BuilderState: ChartSpec + Table + Theme + Size + render cache  [named model, not state: module_name_repetitions]
+  raster.rs     # SVG string -> RGBA via resvg + bundled font; -> egui ColorImage
+  camera.rs     # pan/zoom Camera (mirrors hiker-canvas/view-core/src/camera.rs)
+  preview.rs    # interactive preview widget: texture + pan/pinch-zoom over the camera
+  panel.rs      # the comfy builder: column-populated dropdowns driving BuilderState
+gui/fonts/      # bundled LiberationSans-Regular.ttf (same as the prototype), include_bytes!
+```
 
-Hiker-side wiring (the ```chart fence detector in `editor-md`, the CSV tab type) lives in the
-`../notes` repo, not here — kept separate so this component stays host-agnostic and there is no
-integration-time cleanup.
+**Host-facing API (as built):**
+- `camera::Camera` — `zoom_to_cursor`/`pan_by_screen`/`zoom_to_fit`/`screen_to_world`/`world_to_screen`.
+- `model::BuilderState` + `model::{SeriesMode, Channel, Provenance}` — spec/table/theme/size,
+  the transitions, `render(&dyn Backend)`, `to_block`, `from_block`/`save_block`.
+- `raster::rasterize(svg, scale) -> Option<egui::ColorImage>`.
+- `preview::View` (cross-frame texture+key cache) + `preview::preview(state, camera, view, ui)
+  -> egui::Response`.
+- `panel::panel(state, camera, view, ui) -> Option<String>` (returns the exported ```chart
+  block the frame Export is clicked; clipboard is the host's job).
+
+The host holds a `BuilderState`, a `Camera`, and a `preview::View` across frames and calls
+`panel(...)` each frame. (`state.rs`->`model.rs` and `PreviewView`->`preview::View` were
+renamed during implementation to satisfy `module_name_repetitions`; signatures unchanged.)
+
+### 6.1 `state.rs` — `BuilderState`
+Holds the `ChartSpec`, the resolved `Table` (for column lists + inferred types), the `Theme`,
+the canvas `Size`, and a render cache keyed on `core::identity::content_hash`. Transition
+methods mutate the spec (`set_mark`, `set_x`, `add_y`/`remove_y`, `set_color`,
+`set_series_mode` wide<->long, `set_field_type`, `set_title`, `toggle_legend`). A
+`render(&PlottersSvg) -> &CachedRender` recomputes only when the hash changes (SPEC §7).
+Pure/headless-testable (no egui `Context` needed for the transitions or caching).
+- **Export (SPEC §8.2):** `to_block() -> String` = `spec.to_yaml()` wrapped in a ```` ```chart ````
+  fence; "copy" is the host pushing that to the clipboard.
+- **Open-in-editor / save-back (SPEC §8.3):** `BuilderState::from_block(yaml, table,
+  Provenance{ note_id, byte_range })`; `save_block() -> (String /*new block text*/, Range)`
+  re-serializes the config and **re-attaches any inline CSV body verbatim**. The actual splice
+  + note write is host-side (Hiker `app`/`editor`); `gui` only produces the text + range.
+
+### 6.2 `raster.rs` — SVG -> egui texture
+Mirror the proven path in `../notes` (`render_math.rs` example +
+`app/.../widgets/render.rs::svg_fontdb`): a `OnceLock<fontdb::Database>` loaded once with the
+bundled `LiberationSans-Regular.ttf` and mapped to the generic `sans-serif` family (resvg
+renders blank text without it). `resvg::usvg::Tree::from_data` -> `tiny_skia::Pixmap` ->
+`render(scale)` -> RGBA bytes -> `egui::ColorImage::from_rgba_unmultiplied`. Headless-testable:
+assert non-empty, non-transparent pixels for a known chart SVG.
+
+### 6.3 `camera.rs` + `preview.rs` — pan/pinch-zoom (mirror hiker-canvas)
+`Camera { scale, pan }` with `zoom_to_cursor(viewport, cursor, factor)`,
+`pan_by_screen(delta)`, `zoom_to_fit(viewport, content)` — copy the math from
+`hiker-canvas/view-core/src/camera.rs`. `preview.rs` paints the cached chart texture under the
+camera and reads gestures from egui exactly like `hiker-canvas/view/src/widget.rs::handle_zoom`:
+```rust
+let (scroll, zoom, cursor) =
+    ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
+// pinch + ctrl/cmd-scroll fold into zoom_delta -> zoom_to_cursor; else pan_by_screen
+```
+Plus keyboard `+`/`-`/`0` (zoom in/out/fit). Camera math is headless-testable; the `ui` paint
+can be smoke-tested with a throwaway `egui::Context` running one frame.
+
+### 6.4 `panel.rs` — the comfy builder
+`fn ui(state: &mut BuilderState, ui: &mut egui::Ui)`: `ComboBox` for mark; `x`/`color` pickers
+populated from `state.table().columns` (can't mistype a column); a `y` multiselect; per-field
+type pickers defaulting to the inferred type; title field; legend checkbox; a "series from:
+columns / values in a column" toggle writing the wide vs long encoding (SPEC §2.3.1); the
+`preview.rs` widget; and an export/copy button. Every action goes through a `BuilderState`
+transition so the produced spec is identical to a hand-authored one.
+
+Hiker-side wiring (the ```chart fence detector in `editor-md`, the CSV tab type, the clipboard
++ note-splice on save) lives in the `../notes` repo, not here — kept separate so this component
+stays host-agnostic and there is no integration-time cleanup.
 
 ---
 

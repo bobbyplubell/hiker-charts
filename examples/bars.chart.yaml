@@ -1,0 +1,5 @@
+mark: bar
+x: { field: month, type: ordinal }
+y: [revenue, profit]
+config:
+  title: Revenue vs profit (grouped bars)
