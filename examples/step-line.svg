@@ -1,0 +1,74 @@
+<svg width="800" height="500" viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg">
+<rect x="0" y="0" width="800" height="500" opacity="1" fill="#FFFFFF" stroke="none"/>
+<text x="400" y="19" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="17.741935483870968" opacity="1" fill="#212121">
+Monthly sales (step)
+</text>
+<text x="14" y="242" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121" transform="rotate(270, 14, 242)">
+value
+</text>
+<text x="427" y="486" dy="-0.5ex" text-anchor="middle" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121">
+month
+</text>
+<polyline fill="none" opacity="1" stroke="#212121" stroke-width="1" points="67,41 67,443 "/>
+<text x="58" y="443" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121">
+0
+</text>
+<polyline fill="none" opacity="1" stroke="#212121" stroke-width="1" points="62,443 67,443 "/>
+<text x="58" y="355" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121">
+50
+</text>
+<polyline fill="none" opacity="1" stroke="#212121" stroke-width="1" points="62,355 67,355 "/>
+<text x="58" y="266" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121">
+100
+</text>
+<polyline fill="none" opacity="1" stroke="#212121" stroke-width="1" points="62,266 67,266 "/>
+<text x="58" y="178" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121">
+150
+</text>
+<polyline fill="none" opacity="1" stroke="#212121" stroke-width="1" points="62,178 67,178 "/>
+<text x="58" y="89" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121">
+200
+</text>
+<polyline fill="none" opacity="1" stroke="#212121" stroke-width="1" points="62,89 67,89 "/>
+<polyline fill="none" opacity="1" stroke="#212121" stroke-width="1" points="68,444 785,444 "/>
+<text x="97" y="454" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121">
+2023-12-31
+</text>
+<polyline fill="none" opacity="1" stroke="#212121" stroke-width="1" points="97,444 97,449 "/>
+<text x="196" y="454" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121">
+2024-01-23
+</text>
+<polyline fill="none" opacity="1" stroke="#212121" stroke-width="1" points="196,444 196,449 "/>
+<text x="295" y="454" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121">
+2024-02-15
+</text>
+<polyline fill="none" opacity="1" stroke="#212121" stroke-width="1" points="295,444 295,449 "/>
+<text x="395" y="454" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121">
+2024-03-09
+</text>
+<polyline fill="none" opacity="1" stroke="#212121" stroke-width="1" points="395,444 395,449 "/>
+<text x="494" y="454" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121">
+2024-04-01
+</text>
+<polyline fill="none" opacity="1" stroke="#212121" stroke-width="1" points="494,444 494,449 "/>
+<text x="593" y="454" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121">
+2024-04-24
+</text>
+<polyline fill="none" opacity="1" stroke="#212121" stroke-width="1" points="593,444 593,449 "/>
+<text x="692" y="454" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121">
+2024-05-18
+</text>
+<polyline fill="none" opacity="1" stroke="#212121" stroke-width="1" points="692,444 692,449 "/>
+<polyline fill="none" opacity="1" stroke="#1F77B4" stroke-width="3" points="100,266 233,266 233,195 357,195 357,231 490,231 490,142 619,142 619,160 752,160 752,71 "/>
+<polyline fill="none" opacity="1" stroke="#FF7F0E" stroke-width="3" points="100,408 233,408 233,381 357,381 357,394 490,394 490,351 619,351 619,358 752,358 752,319 "/>
+<rect x="686" y="46" width="95" height="49" opacity="0.85" fill="#FFFFFF" stroke="none"/>
+<rect x="686" y="46" width="95" height="49" opacity="1" fill="none" stroke="#212121"/>
+<text x="726" y="56" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121">
+revenue
+</text>
+<text x="726" y="74" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#212121">
+profit
+</text>
+<polyline fill="none" opacity="1" stroke="#1F77B4" stroke-width="3" points="696,61 714,61 "/>
+<polyline fill="none" opacity="1" stroke="#FF7F0E" stroke-width="3" points="696,79 714,79 "/>
+</svg>

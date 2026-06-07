@@ -1,0 +1,6 @@
+mark: histogram
+x: revenue
+config:
+  title: Revenue distribution
+  bins: 5
+  fill_opacity: 0.7

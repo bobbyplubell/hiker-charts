@@ -3,12 +3,40 @@
 //! empty-chart error path. No golden bytes — plotters' SVG is not byte-stable (SPEC §4.4).
 
 use hiker_charts_core::backend::{
-    Axis, AxisKind, Backend, RenderError, ResolvedChart, Series, Size,
+    Axis, AxisKind, Backend, RenderError, ResolvedChart, Series, Size, Slice,
 };
-use hiker_charts_core::dsl::{Config, Mark};
+use hiker_charts_core::dsl::{Config, Interpolate, Mark, Orientation, Scale, ScaleKind};
 use hiker_charts_core::theme::Theme;
 
 use super::PlottersSvg;
+
+/// A quantitative axis with the given title and the identity (linear) scale.
+fn quant_axis(title: &str) -> Axis {
+    Axis { title: title.to_string(), kind: AxisKind::Quantitative, scale: Scale::default() }
+}
+
+/// A two-series chart of the given mark, with both series aligned on the same x positions.
+fn two_series(mark: Mark) -> ResolvedChart {
+    ResolvedChart {
+        mark,
+        series: vec![
+            Series {
+                name: "a".to_string(),
+                points: vec![(0.0, 2.0), (1.0, 3.0), (2.0, 1.0)],
+                sizes: Vec::new(),
+            },
+            Series {
+                name: "b".to_string(),
+                points: vec![(0.0, 1.0), (1.0, 2.0), (2.0, 4.0)],
+                sizes: Vec::new(),
+            },
+        ],
+        slices: Vec::new(),
+        x_axis: quant_axis("x"),
+        y_axis: quant_axis("y"),
+        config: Config::default(),
+    }
+}
 
 /// A standard render size for the tests.
 fn size() -> Size {
@@ -19,9 +47,10 @@ fn size() -> Size {
 fn single(mark: Mark, points: Vec<(f64, f64)>) -> ResolvedChart {
     ResolvedChart {
         mark,
-        series: vec![Series { name: String::new(), points }],
-        x_axis: Axis { title: "x".to_string(), kind: AxisKind::Quantitative },
-        y_axis: Axis { title: "y".to_string(), kind: AxisKind::Quantitative },
+        series: vec![Series { name: String::new(), points, sizes: Vec::new() }],
+        slices: Vec::new(),
+        x_axis: quant_axis("x"),
+        y_axis: quant_axis("y"),
         config: Config::default(),
     }
 }
@@ -96,11 +125,12 @@ fn wide_multi_series_draws_all_and_legend() {
     let chart = ResolvedChart {
         mark: Mark::Line,
         series: vec![
-            Series { name: "revenue".to_string(), points: vec![(0.0, 1.0), (1.0, 4.0)] },
-            Series { name: "profit".to_string(), points: vec![(0.0, 0.5), (1.0, 2.0)] },
+            Series { name: "revenue".to_string(), points: vec![(0.0, 1.0), (1.0, 4.0)], sizes: Vec::new() },
+            Series { name: "profit".to_string(), points: vec![(0.0, 0.5), (1.0, 2.0)], sizes: Vec::new() },
         ],
-        x_axis: Axis { title: "month".to_string(), kind: AxisKind::Quantitative },
-        y_axis: Axis { title: "value".to_string(), kind: AxisKind::Quantitative },
+        slices: Vec::new(),
+        x_axis: quant_axis("month"),
+        y_axis: quant_axis("value"),
         config: Config::default(),
     };
     let svg = render_ok(&chart);
@@ -113,11 +143,12 @@ fn grouped_bars_render_for_multiple_series() {
     let chart = ResolvedChart {
         mark: Mark::Bar,
         series: vec![
-            Series { name: "a".to_string(), points: vec![(0.0, 2.0), (1.0, 3.0)] },
-            Series { name: "b".to_string(), points: vec![(0.0, 1.0), (1.0, 4.0)] },
+            Series { name: "a".to_string(), points: vec![(0.0, 2.0), (1.0, 3.0)], sizes: Vec::new() },
+            Series { name: "b".to_string(), points: vec![(0.0, 1.0), (1.0, 4.0)], sizes: Vec::new() },
         ],
-        x_axis: Axis { title: "g".to_string(), kind: AxisKind::Quantitative },
-        y_axis: Axis { title: "v".to_string(), kind: AxisKind::Quantitative },
+        slices: Vec::new(),
+        x_axis: quant_axis("g"),
+        y_axis: quant_axis("v"),
         config: Config::default(),
     };
     let svg = render_ok(&chart);
@@ -132,7 +163,9 @@ fn categorical_axis_labels_appear() {
         series: vec![Series {
             name: String::new(),
             points: vec![(0.0, 10.0), (1.0, 20.0), (2.0, 15.0)],
+            sizes: Vec::new(),
         }],
+        slices: Vec::new(),
         x_axis: Axis {
             title: "month".to_string(),
             kind: AxisKind::Categorical(vec![
@@ -140,8 +173,9 @@ fn categorical_axis_labels_appear() {
                 "feb".to_string(),
                 "mar".to_string(),
             ]),
+            scale: Scale::default(),
         },
-        y_axis: Axis { title: "sales".to_string(), kind: AxisKind::Quantitative },
+        y_axis: quant_axis("sales"),
         config: Config::default(),
     };
     let svg = render_ok(&chart);
@@ -157,9 +191,15 @@ fn temporal_axis_formats_dates() {
         series: vec![Series {
             name: String::new(),
             points: vec![(1_609_459_200.0, 100.0), (1_625_097_600.0, 140.0)],
+            sizes: Vec::new(),
         }],
-        x_axis: Axis { title: "date".to_string(), kind: AxisKind::Temporal },
-        y_axis: Axis { title: "v".to_string(), kind: AxisKind::Quantitative },
+        slices: Vec::new(),
+        x_axis: Axis {
+            title: "date".to_string(),
+            kind: AxisKind::Temporal,
+            scale: Scale::default(),
+        },
+        y_axis: quant_axis("v"),
         config: Config::default(),
     };
     let svg = render_ok(&chart);
@@ -180,11 +220,12 @@ fn legend_disabled_hides_names() {
     let mut chart = ResolvedChart {
         mark: Mark::Line,
         series: vec![
-            Series { name: "alpha".to_string(), points: vec![(0.0, 1.0), (1.0, 2.0)] },
-            Series { name: "beta".to_string(), points: vec![(0.0, 2.0), (1.0, 1.0)] },
+            Series { name: "alpha".to_string(), points: vec![(0.0, 1.0), (1.0, 2.0)], sizes: Vec::new() },
+            Series { name: "beta".to_string(), points: vec![(0.0, 2.0), (1.0, 1.0)], sizes: Vec::new() },
         ],
-        x_axis: Axis { title: "x".to_string(), kind: AxisKind::Quantitative },
-        y_axis: Axis { title: "y".to_string(), kind: AxisKind::Quantitative },
+        slices: Vec::new(),
+        x_axis: quant_axis("x"),
+        y_axis: quant_axis("y"),
         config: Config::default(),
     };
     chart.config.legend = false;
@@ -197,4 +238,162 @@ fn epoch_formatter_is_inverse_of_iso_date() {
     // 1970-01-01 is epoch 0; verify our civil-date math directly.
     assert_eq!(super::format_epoch(0), "1970-01-01");
     assert_eq!(super::format_epoch(1_609_459_200), "2021-01-01");
+}
+
+#[test]
+fn stacked_bars_differ_from_grouped() {
+    let grouped = render_ok(&two_series(Mark::Bar));
+    let mut chart = two_series(Mark::Bar);
+    chart.config.stack = true;
+    let stacked = render_ok(&chart);
+    assert!(stacked.contains("<rect"), "stacked bars still emit rectangles");
+    assert_ne!(grouped, stacked, "stacking must change the rendered geometry");
+}
+
+#[test]
+fn stacked_areas_differ_from_overlaid() {
+    let overlaid = render_ok(&two_series(Mark::Area));
+    let mut chart = two_series(Mark::Area);
+    chart.config.stack = true;
+    let stacked = render_ok(&chart);
+    assert_ne!(overlaid, stacked, "stacked areas must differ from overlaid");
+}
+
+#[test]
+fn step_line_differs_from_linear() {
+    let linear = render_ok(&single(Mark::Line, vec![(0.0, 1.0), (1.0, 3.0), (2.0, 2.0)]));
+    let mut chart = single(Mark::Line, vec![(0.0, 1.0), (1.0, 3.0), (2.0, 2.0)]);
+    chart.config.interpolate = Some(Interpolate::Step);
+    let step = render_ok(&chart);
+    assert_ne!(linear, step, "step interpolation must change the line path");
+}
+
+#[test]
+fn show_grid_false_changes_svg() {
+    let with_grid = render_ok(&single(Mark::Line, vec![(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]));
+    let mut chart = single(Mark::Line, vec![(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]);
+    chart.config.show_grid = false;
+    let no_grid = render_ok(&chart);
+    assert_ne!(with_grid, no_grid, "disabling the grid must change the svg");
+    // Axis labels are kept either way.
+    assert!(no_grid.contains("<text"), "axis labels stay when grid is off");
+}
+
+#[test]
+fn point_size_affects_output() {
+    let small = render_ok(&single(Mark::Point, vec![(0.0, 1.0), (1.0, 2.0)]));
+    let mut chart = single(Mark::Point, vec![(0.0, 1.0), (1.0, 2.0)]);
+    chart.config.point_size = Some(12.0);
+    let large = render_ok(&chart);
+    assert_ne!(small, large, "a larger point size must change the circles");
+}
+
+#[test]
+fn line_width_affects_output() {
+    let thin = render_ok(&single(Mark::Line, vec![(0.0, 1.0), (1.0, 2.0)]));
+    let mut chart = single(Mark::Line, vec![(0.0, 1.0), (1.0, 2.0)]);
+    chart.config.line_width = Some(8.0);
+    let thick = render_ok(&chart);
+    assert_ne!(thin, thick, "a wider stroke must change the line");
+}
+
+#[test]
+fn fill_opacity_affects_area_output() {
+    let default = render_ok(&single(Mark::Area, vec![(0.0, 1.0), (1.0, 3.0), (2.0, 2.0)]));
+    let mut chart = single(Mark::Area, vec![(0.0, 1.0), (1.0, 3.0), (2.0, 2.0)]);
+    chart.config.fill_opacity = Some(0.9);
+    let opaque = render_ok(&chart);
+    assert_ne!(default, opaque, "fill opacity must change the area fill");
+}
+
+#[test]
+fn histogram_emits_bars() {
+    let chart = single(Mark::Histogram, vec![(0.5, 3.0), (1.5, 5.0), (2.5, 2.0)]);
+    let svg = render_ok(&chart);
+    assert!(svg.contains("<rect"), "histogram should emit bar rectangles");
+}
+
+#[test]
+fn horizontal_bars_differ_from_vertical() {
+    let vertical = render_ok(&single(Mark::Bar, vec![(0.0, 2.0), (1.0, 5.0), (2.0, 3.0)]));
+    let mut chart = single(Mark::Bar, vec![(0.0, 2.0), (1.0, 5.0), (2.0, 3.0)]);
+    chart.config.orientation = Some(Orientation::Horizontal);
+    let horizontal = render_ok(&chart);
+    assert!(horizontal.contains("<rect"), "horizontal bars still emit rectangles");
+    assert_ne!(vertical, horizontal, "orientation must change the geometry");
+}
+
+#[test]
+fn bubble_sizes_change_circle_radii() {
+    let plain = render_ok(&single(Mark::Point, vec![(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]));
+    let mut chart = single(Mark::Point, vec![(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]);
+    chart.series[0].sizes = vec![1.0, 50.0, 100.0];
+    let bubble = render_ok(&chart);
+    assert!(bubble.contains("<circle"), "bubble chart still emits circles");
+    assert_ne!(plain, bubble, "per-point sizes must vary the radii");
+}
+
+#[test]
+fn log_scale_render_differs_from_linear() {
+    let linear = render_ok(&single(Mark::Line, vec![(1.0, 10.0), (2.0, 100.0), (3.0, 1000.0)]));
+    let mut chart = single(Mark::Line, vec![(1.0, 10.0), (2.0, 100.0), (3.0, 1000.0)]);
+    chart.y_axis.scale = Scale { kind: ScaleKind::Log, domain: None, zero: false };
+    let log = render_ok(&chart);
+    assert_ne!(linear, log, "a log y scale must change the rendered line");
+}
+
+#[test]
+fn arc_renders_wedges_and_legend() {
+    let chart = ResolvedChart {
+        mark: Mark::Arc,
+        series: Vec::new(),
+        slices: vec![
+            Slice { label: "north".to_string(), value: 30.0, color_index: 0 },
+            Slice { label: "south".to_string(), value: 10.0, color_index: 1 },
+            Slice { label: "east".to_string(), value: 20.0, color_index: 2 },
+        ],
+        x_axis: quant_axis(""),
+        y_axis: quant_axis(""),
+        config: Config::default(),
+    };
+    let svg = render_ok(&chart);
+    assert!(svg.contains("<svg"), "arc must emit an svg");
+    assert!(svg.contains("<polygon") || svg.contains("<path"), "wedges need filled shapes");
+    assert!(svg.contains("north"), "slice label should appear in the legend");
+}
+
+#[test]
+fn arc_with_no_slices_is_empty() {
+    let chart = ResolvedChart {
+        mark: Mark::Arc,
+        series: Vec::new(),
+        slices: Vec::new(),
+        x_axis: quant_axis(""),
+        y_axis: quant_axis(""),
+        config: Config::default(),
+    };
+    let err = PlottersSvg
+        .render(&chart, &Theme::default(), size())
+        .expect_err("an arc with no slices must error");
+    assert!(matches!(err, RenderError::Empty));
+}
+
+#[test]
+fn donut_inner_radius_differs_from_pie() {
+    let pie = ResolvedChart {
+        mark: Mark::Arc,
+        series: Vec::new(),
+        slices: vec![
+            Slice { label: "a".to_string(), value: 1.0, color_index: 0 },
+            Slice { label: "b".to_string(), value: 1.0, color_index: 1 },
+        ],
+        x_axis: quant_axis(""),
+        y_axis: quant_axis(""),
+        config: Config::default(),
+    };
+    let pie_svg = render_ok(&pie);
+    let mut donut = pie.clone();
+    donut.config.inner_radius = Some(0.5);
+    let donut_svg = render_ok(&donut);
+    assert_ne!(pie_svg, donut_svg, "a donut hole must change the wedge geometry");
 }

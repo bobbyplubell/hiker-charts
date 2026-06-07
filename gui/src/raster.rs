@@ -87,9 +87,19 @@ mod tests {
             series: vec![Series {
                 name: "rev".to_string(),
                 points: vec![(0.0, 1.0), (1.0, 3.0), (2.0, 2.0)],
+                sizes: Vec::new(),
             }],
-            x_axis: Axis { title: "month".to_string(), kind: AxisKind::Quantitative },
-            y_axis: Axis { title: "revenue".to_string(), kind: AxisKind::Quantitative },
+            slices: Vec::new(),
+            x_axis: Axis {
+                title: "month".to_string(),
+                kind: AxisKind::Quantitative,
+                scale: hiker_charts_core::dsl::Scale::default(),
+            },
+            y_axis: Axis {
+                title: "revenue".to_string(),
+                kind: AxisKind::Quantitative,
+                scale: hiker_charts_core::dsl::Scale::default(),
+            },
             config: Config { title: Some("Sales".to_string()), ..Config::default() },
         };
         let size = Size { width: 320, height: 240 };

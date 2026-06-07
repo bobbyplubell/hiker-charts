@@ -1,0 +1,8 @@
+mark: bar
+x: { field: month, type: temporal }
+y: [revenue, profit]
+config:
+  title: Monthly sales (stacked)
+  legend: true
+  stack: true
+  fill_opacity: 0.8

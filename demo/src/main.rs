@@ -14,7 +14,7 @@ use hiker_charts_core::dsl::ChartSpec;
 use hiker_charts_core::theme::Theme;
 use hiker_charts_gui::camera::Camera;
 use hiker_charts_gui::model::BuilderState;
-use hiker_charts_gui::panel::panel;
+use hiker_charts_gui::panel::{panel, ThemeChoice};
 use hiker_charts_gui::preview::View;
 
 /// Sample data + spec compiled in so the demo runs from any working directory.
@@ -25,6 +25,7 @@ const SAMPLE_SPEC: &str = include_str!("../../examples/sales.chart.yaml");
 /// preview camera (pan/zoom), and the preview's cached texture handle.
 struct Demo {
     state: BuilderState,
+    theme: ThemeChoice,
     camera: Camera,
     view: View,
 }
@@ -37,6 +38,7 @@ impl Demo {
         let size = Size { width: 800, height: 500 };
         Self {
             state: BuilderState::new(spec, table, Theme::default(), size),
+            theme: ThemeChoice::default(),
             camera: Camera::default(),
             view: View::new(),
         }
@@ -46,7 +48,9 @@ impl Demo {
 impl eframe::App for Demo {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some(block) = panel(&mut self.state, &mut self.camera, &mut self.view, ui) {
+            let exported =
+                panel(&mut self.state, &mut self.theme, &mut self.camera, &mut self.view, ui);
+            if let Some(block) = exported {
                 ctx.copy_text(block);
             }
         });

@@ -1,0 +1,7 @@
+mark: point
+x: { field: month, type: temporal }
+y: revenue
+size: profit
+config:
+  title: Revenue vs month (bubble = profit)
+  point_size: 6

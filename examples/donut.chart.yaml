@@ -1,0 +1,6 @@
+mark: arc
+theta: revenue
+color: month
+config:
+  title: Revenue share by month
+  inner_radius: 0.5

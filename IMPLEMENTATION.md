@@ -425,3 +425,99 @@ deny-list (200-line fn cap, `wildcard_imports`, `module_inception`, `module_name
 file cap (`check-lengths.py`); the anti-split detector (`check-splits.py` — every `mod.rs`/
 `lib.rs` needs a real `//!` doc, no `*_helper.rs`/`*_part2.rs`, no sibling-only shards); and the
 emoji ban (`check-emojis.py`). `#[allow(...)]` to dodge a lint is not permitted — fix the code.
+
+---
+
+## 17. Registry + GoG primitives expansion (v1.2)
+
+Goal: make chart types fall out of orthogonal primitives instead of being hand-wired, so
+adding a type is ~one registry entry. New marks (`Histogram`, `Arc`), new channels (`size`,
+`theta`), a `bin` step, `orientation`, and per-axis **scales** (log/sqrt/domain/zero). One
+**mark-capability registry** in `core` is the single source of truth that both the backend
+(how to draw) and the panel (which controls to show) read — enforcing SPEC §2.2 by
+construction. plotters stays behind the backend trait (§4.1) — none of this names a plotters
+type in `core`.
+
+### 17.1 `core/src/registry.rs` — the single source of truth
+```rust
+pub struct ChannelSet { pub x: bool, pub y: bool, pub color: bool, pub size: bool, pub theta: bool }
+pub struct OptionSet {
+    pub stack: bool, pub interpolate: bool, pub orientation: bool,
+    pub bins: bool, pub inner_radius: bool,
+    pub point_size: bool, pub line_width: bool, pub fill_opacity: bool,
+    pub scales: bool,            // axis scales apply (cartesian marks only)
+}
+pub struct MarkCaps { pub cartesian: bool, pub channels: ChannelSet, pub options: OptionSet }
+pub const fn caps(mark: Mark) -> MarkCaps;     // exhaustive match, one arm per mark
+```
+Per-mark caps:
+- `Bar`: cartesian; x,y,color; stack, orientation, fill_opacity, scales.
+- `Line`: cartesian; x,y,color; interpolate, line_width, scales.
+- `Point`: cartesian; x,y,color,**size**; point_size, scales. (size channel ⇒ bubble)
+- `Area`: cartesian; x,y,color; stack, line_width, fill_opacity, scales.
+- `Histogram`: cartesian; x,color; bins, fill_opacity, scales. (y is computed frequency)
+- `Arc`: **radial** (cartesian=false); **theta**,color; inner_radius, fill_opacity. (pie/donut)
+
+### 17.2 `core/src/dsl.rs` — new channels, marks, config
+- `ChartSpec` gains `size: Option<FieldDef>` and `theta: Option<FieldDef>` (both
+  `#[serde(default, skip_serializing_if=...)]`), plus accessors `size_field()`/`theta_field()`.
+- `Mark` gains `Histogram`, `Arc` (`#[serde(rename_all="lowercase")]`). Updating `Mark` forces
+  the backend match + `caps()` match — do both.
+- `Config` gains (all additive/defaulted):
+  - `orientation: Option<Orientation>` where `enum Orientation { Vertical, Horizontal }`.
+  - `bins: Option<usize>` (histogram bucket count; default e.g. 20 in resolve).
+  - `inner_radius: Option<f32>` (donut hole, 0.0..1.0 fraction; 0 = pie).
+  - `x_scale: Option<Scale>`, `y_scale: Option<Scale>`.
+- `pub struct Scale { kind: ScaleKind, domain: Option<(f64,f64)>, #[serde(default)] zero: bool }`
+  with `pub enum ScaleKind { Linear, Log, Sqrt }` (`rename_all="lowercase"`). `Scale` impls
+  `forward(f64)->Option<f64>` (None for log of ≤0) and `inverse(f64)->f64`.
+
+### 17.3 `core/src/backend.rs` — resolved-model additions (keep additive)
+- `Series` gains `pub sizes: Vec<f32>` — parallel to `points`, empty unless a size channel is
+  bound (bubble). Backend zips points+sizes for `Point`.
+- `ResolvedChart` gains `pub slices: Vec<Slice>` where `pub struct Slice { pub label: String,
+  pub value: f64, pub color_index: usize }` — populated for `Arc`, empty otherwise; `series`
+  is empty for `Arc`.
+- `Axis` gains `pub scale: Scale` (default `{Linear, None, false}`). The backend applies
+  `scale.forward` to coordinates when building ranges/drawing and `scale.inverse` in its tick
+  label formatter; `domain`/`zero` set the axis range. (Coordinates stay `f64`; the scale is a
+  pure transform, so the single-coordinate-type design holds.)
+
+### 17.4 `core/src/resolve.rs` — binning, size, slices, scales
+- Copy `config.x_scale`/`y_scale` into `x_axis.scale`/`y_axis.scale` (default Linear).
+- **size channel:** when bound and the mark allows it (registry), fill `Series.sizes` (coerced
+  quantitative; one per point). Else leave empty.
+- **Histogram:** bin the `x` column into `config.bins` (default 20) equal-width buckets over
+  its numeric range; `series` = one series whose points are `(bin_center, count)`; x axis
+  Quantitative, y axis "count". (Self-contained binning; no transform framework yet.)
+- **Arc:** group by the `color`/category field, sum the `theta` field per group → `slices`
+  (`label`, `value`, `color_index`); leave `series` empty, axes unused.
+- Diagnostics for: size on a mark that doesn't take it, missing theta for Arc, log scale with
+  ≤0 data (drop point + warn), empty bins.
+- Validate against the registry: a channel bound but not in `caps(mark).channels` ⇒ warning.
+
+### 17.5 `backend-plotters` — render the new marks + scales
+- Read `caps(mark)`; for `cartesian` marks build the `f64×f64` area with **scaled ranges**
+  (apply `axis.scale.forward` to the data domain or the explicit `domain`, honoring `zero`),
+  transform each coordinate via `forward`, and format ticks via `inverse`.
+- `Histogram`: bars at bin centers (already resolved). `orientation: Horizontal` (Bar): swap
+  the x/y roles so categories run down the y axis. `Point` + sizes: per-point circle radius
+  from `sizes` (scaled to a sensible px range) = bubble. `Arc`: a **radial** path — draw pie
+  wedges from `slices` (cumulative angles), `inner_radius` cuts the donut hole; no axes/mesh;
+  legend from slice labels. Compose arcs from plotters primitives (it has no pie builder).
+- Keep per-mark draw fns ≤200 lines / cognitive ≤30; split into an `impl`-continuation or
+  sibling modules with real docs if `lib.rs` nears 1500 lines.
+
+### 17.6 `gui` — registry-driven panel
+- `panel` reads `caps(state.spec().mark)` and shows **only** applicable controls: channel
+  pickers gated by `caps.channels` (add `size`/`theta` pickers), option widgets gated by
+  `caps.options` (bins slider, orientation toggle, donut inner-radius, the existing
+  style/stack/interpolate), and a **Scales** section (per cartesian axis: kind Linear/Log/Sqrt,
+  optional min/max domain, include-zero) gated by `caps.options.scales`. Switching to a mark
+  the current channel/option doesn't suit simply hides that control (the value is preserved in
+  the spec for forward-compat). New `BuilderState` transitions for each: `set_size`,
+  `set_theta`, `set_orientation`, `set_bins`, `set_inner_radius`, `set_x_scale`, `set_y_scale`.
+
+### 17.7 Adding a future mark (the payoff)
+Heatmap/boxplot/etc. later = add a `Mark` variant + one `caps()` arm + one backend draw fn
+(+ any new channel). The panel adapts automatically from the registry; no UI wiring per type.

@@ -1,0 +1,7 @@
+mark: line
+x: { field: month, type: temporal }
+y: revenue
+config:
+  title: Revenue (log y axis)
+  y_scale:
+    kind: log

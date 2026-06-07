@@ -19,11 +19,12 @@ use std::ops::Range;
 use hiker_charts_core::backend::{Backend, RenderOutput, Size};
 use hiker_charts_core::data::Table;
 use hiker_charts_core::dsl::{
-    ChartSpec, DataType, FieldDef, FieldSpec, Mark, YEncoding,
+    ChartSpec, DataType, FieldDef, FieldSpec, Interpolate, Mark, Orientation, Scale, ScaleKind,
+    YEncoding,
 };
 use hiker_charts_core::identity::content_hash;
 use hiker_charts_core::resolve::resolve;
-use hiker_charts_core::theme::Theme;
+use hiker_charts_core::theme::{Color, Theme};
 use hiker_charts_core::typing::infer_type;
 
 /// How a chart's multiple series are encoded: wide (one column per series, a `y`
@@ -176,6 +177,16 @@ impl BuilderState {
         self.spec.color = column.map(|c| FieldDef::Shorthand(c.to_string()));
     }
 
+    /// Bind (or clear) the size channel to a column by name (bubble radius for `Point`).
+    pub fn set_size(&mut self, column: Option<&str>) {
+        self.spec.size = column.map(|c| FieldDef::Shorthand(c.to_string()));
+    }
+
+    /// Bind (or clear) the theta channel to a column by name (slice magnitude for `Arc`).
+    pub fn set_theta(&mut self, column: Option<&str>) {
+        self.spec.theta = column.map(|c| FieldDef::Shorthand(c.to_string()));
+    }
+
     /// Switch between wide and long multi-series encodings (SPEC §2.3.1). Wide drops
     /// `color` and keeps the `y` list; long collapses `y` to its first field and
     /// moves the chosen split column into `color`. `long_split` is ignored in wide
@@ -216,6 +227,175 @@ impl BuilderState {
     /// Toggle the legend on or off.
     pub const fn toggle_legend(&mut self) {
         self.spec.config.legend = !self.spec.config.legend;
+    }
+
+    /// Set (or clear) the x-axis title in the config.
+    pub fn set_x_title(&mut self, title: Option<&str>) {
+        self.spec.config.x_title = title.map(str::to_string);
+    }
+
+    /// Set (or clear) the y-axis title in the config.
+    pub fn set_y_title(&mut self, title: Option<&str>) {
+        self.spec.config.y_title = title.map(str::to_string);
+    }
+
+    /// Set (or clear) the point/scatter radius in pixels.
+    pub const fn set_point_size(&mut self, size: Option<f32>) {
+        self.spec.config.point_size = size;
+    }
+
+    /// Set (or clear) the line/area stroke width in pixels.
+    pub const fn set_line_width(&mut self, width: Option<f32>) {
+        self.spec.config.line_width = width;
+    }
+
+    /// Set (or clear) the area/bar fill opacity (`0.0..=1.0`).
+    pub const fn set_fill_opacity(&mut self, opacity: Option<f32>) {
+        self.spec.config.fill_opacity = opacity;
+    }
+
+    /// Stack or unstack bar/area series on a per-x cumulative baseline.
+    pub const fn set_stack(&mut self, stack: bool) {
+        self.spec.config.stack = stack;
+    }
+
+    /// Set (or clear) the line interpolation; `None` is the linear default.
+    pub const fn set_interpolate(&mut self, interpolate: Option<Interpolate>) {
+        self.spec.config.interpolate = interpolate;
+    }
+
+    /// Show or hide the interior mesh gridlines.
+    pub const fn set_show_grid(&mut self, show: bool) {
+        self.spec.config.show_grid = show;
+    }
+
+    /// Set (or clear) the bar/area orientation; `None` restores the vertical default.
+    pub const fn set_orientation(&mut self, orientation: Option<Orientation>) {
+        self.spec.config.orientation = orientation;
+    }
+
+    /// Set (or clear) the histogram bucket count; `None` lets the resolver default apply.
+    pub const fn set_bins(&mut self, bins: Option<usize>) {
+        self.spec.config.bins = bins;
+    }
+
+    /// Set (or clear) the donut hole radius as a `0.0..=1.0` fraction (`Arc`); `None` = pie.
+    pub const fn set_inner_radius(&mut self, radius: Option<f32>) {
+        self.spec.config.inner_radius = radius;
+    }
+
+    /// Set (or clear) the whole x-axis scale; `None` restores the linear identity.
+    pub const fn set_x_scale(&mut self, scale: Option<Scale>) {
+        self.spec.config.x_scale = scale;
+    }
+
+    /// Set (or clear) the whole y-axis scale; `None` restores the linear identity.
+    pub const fn set_y_scale(&mut self, scale: Option<Scale>) {
+        self.spec.config.y_scale = scale;
+    }
+
+    /// Set the transform kind of one cartesian axis, preserving its domain/zero. Materializes
+    /// a default `Scale` first so the panel can change kind without touching the other fields.
+    pub fn set_scale_kind(&mut self, axis: Axis, kind: ScaleKind) {
+        let scale = self.scale_or_default(axis);
+        self.write_scale(axis, Scale { kind, ..scale });
+    }
+
+    /// Set (or clear) one cartesian axis's explicit `(min, max)` domain; `None` = auto.
+    pub fn set_scale_domain(&mut self, axis: Axis, domain: Option<(f64, f64)>) {
+        let scale = self.scale_or_default(axis);
+        self.write_scale(axis, Scale { domain, ..scale });
+    }
+
+    /// Set whether one cartesian axis's auto domain includes zero.
+    pub fn set_scale_zero(&mut self, axis: Axis, zero: bool) {
+        let scale = self.scale_or_default(axis);
+        self.write_scale(axis, Scale { zero, ..scale });
+    }
+
+    /// The current scale for `axis`, or the linear default when none is set, so a partial
+    /// edit (just the kind, say) starts from a complete value.
+    fn scale_or_default(&self, axis: Axis) -> Scale {
+        match axis {
+            Axis::X => self.spec.config.x_scale,
+            Axis::Y => self.spec.config.y_scale,
+        }
+        .unwrap_or_default()
+    }
+
+    /// Write a fully-formed scale back to the chosen axis slot.
+    const fn write_scale(&mut self, axis: Axis, scale: Scale) {
+        match axis {
+            Axis::X => self.spec.config.x_scale = Some(scale),
+            Axis::Y => self.spec.config.y_scale = Some(scale),
+        }
+    }
+
+    // --- Per-series color override -------------------------------------------
+
+    /// Override the color of series `index` in `config.palette`, padding earlier
+    /// entries from the current effective colors so positions before `index` keep
+    /// the color they render with today. Writing the palette overrides the theme
+    /// for those series (SPEC §6.3); the rest still fall back to the theme.
+    pub fn set_series_color(&mut self, index: usize, color: Color) {
+        let mut palette = self.spec.config.palette.take().unwrap_or_default();
+        while palette.len() <= index {
+            let pos = palette.len();
+            palette.push(hex(self.effective_color(pos)));
+        }
+        palette[index] = hex(color);
+        self.spec.config.palette = Some(palette);
+    }
+
+    /// Drop any per-series palette override, restoring the theme's palette.
+    pub fn clear_palette(&mut self) {
+        self.spec.config.palette = None;
+    }
+
+    /// The color series `index` currently renders with, for seeding a color picker:
+    /// the palette override entry if present and parseable, else the theme color.
+    #[must_use]
+    pub fn effective_series_color(&self, index: usize) -> Color {
+        self.effective_color(index)
+    }
+
+    /// The color series `pos` currently renders with: the existing palette override
+    /// entry (if parseable) else the theme's palette indexed `pos % len`. Mirrors
+    /// the backend's `series_color` resolution so padding is faithful.
+    fn effective_color(&self, pos: usize) -> Color {
+        if let Some(palette) = self.spec.config.palette.as_ref()
+            && !palette.is_empty()
+            && let Some(c) = parse_hex(&palette[pos % palette.len()])
+        {
+            return c;
+        }
+        let series = &self.theme.series;
+        if series.is_empty() {
+            self.theme.foreground
+        } else {
+            series[pos % series.len()]
+        }
+    }
+
+    // --- Global theme ---------------------------------------------------------
+
+    /// Replace the global theme applied to renders (light/dark + palette).
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+    }
+
+    // --- Series introspection -------------------------------------------------
+
+    /// Resolve the spec against the table and return the series display names in
+    /// render order: the y field names for wide encodings, the distinct color
+    /// values for long ones. Returns an empty vec when the chart cannot resolve
+    /// (e.g. no bound channels), so the panel can show one color picker per series.
+    #[must_use]
+    pub fn series_names(&self) -> Vec<String> {
+        match resolve(&self.spec, &self.table) {
+            Ok(chart) => chart.series.into_iter().map(|s| s.name).collect(),
+            Err(_) => Vec::new(),
+        }
     }
 
     // --- Render cache ---------------------------------------------------------
@@ -276,6 +456,14 @@ pub enum Channel {
     Color,
 }
 
+/// Which cartesian axis a scale edit targets. Radial marks have no axes, so the panel
+/// only surfaces these for cartesian marks (`caps.options.scales`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+    X,
+    Y,
+}
+
 /// Encode a list of y field names as the terse `One` form for a single field or the
 /// `Many` list form for multiple, matching how a human would hand-author it.
 fn encode_y(fields: &[String]) -> YEncoding {
@@ -284,6 +472,25 @@ fn encode_y(fields: &[String]) -> YEncoding {
     } else {
         YEncoding::Many(fields.iter().map(|f| FieldDef::Shorthand(f.clone())).collect())
     }
+}
+
+/// Format an opaque color as a `#rrggbb` hex string for `config.palette`.
+fn hex(color: Color) -> String {
+    format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b)
+}
+
+/// Parse a `#rrggbb` hex string back into an opaque `Color`. Returns `None` on any
+/// malformed input so padding falls back to the theme color. Mirrors the backend's
+/// `#rrggbb` parsing (the only form `set_series_color` ever writes).
+fn parse_hex(s: &str) -> Option<Color> {
+    let h = s.strip_prefix('#').unwrap_or(s);
+    if h.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+    Some(Color::rgb(r, g, b))
 }
 
 /// Ensure a string ends with exactly one trailing newline, so a fence's closing
@@ -298,11 +505,11 @@ fn ensure_trailing_newline(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BuilderState, Channel, Provenance, SeriesMode};
+    use super::{Axis, BuilderState, Channel, Provenance, SeriesMode};
     use hiker_charts_core::backend::Size;
     use hiker_charts_core::data::Table;
-    use hiker_charts_core::dsl::{ChartSpec, DataType, Mark};
-    use hiker_charts_core::theme::Theme;
+    use hiker_charts_core::dsl::{ChartSpec, DataType, Interpolate, Mark, Orientation, ScaleKind};
+    use hiker_charts_core::theme::{Color, Palette, Theme};
     use hiker_charts_plotters::PlottersSvg;
 
     fn table() -> Table {
@@ -402,5 +609,129 @@ mod tests {
     #[test]
     fn save_block_none_without_provenance() {
         assert!(state().save_block().is_none());
+    }
+
+    #[test]
+    fn styling_transitions_change_config() {
+        let mut s = state();
+        s.set_x_title(Some("Month"));
+        s.set_y_title(Some("USD"));
+        s.set_point_size(Some(6.0));
+        s.set_line_width(Some(2.5));
+        s.set_fill_opacity(Some(0.4));
+        s.set_stack(true);
+        s.set_interpolate(Some(Interpolate::Step));
+        s.set_show_grid(false);
+        let c = &s.spec().config;
+        assert_eq!(c.x_title.as_deref(), Some("Month"));
+        assert_eq!(c.y_title.as_deref(), Some("USD"));
+        assert_eq!(c.point_size, Some(6.0));
+        assert_eq!(c.line_width, Some(2.5));
+        assert_eq!(c.fill_opacity, Some(0.4));
+        assert!(c.stack);
+        assert_eq!(c.interpolate, Some(Interpolate::Step));
+        assert!(!c.show_grid);
+        // Clearing an Option title removes it.
+        s.set_x_title(None);
+        assert_eq!(s.spec().config.x_title, None);
+    }
+
+    #[test]
+    fn set_theme_replaces_theme() {
+        let mut s = state();
+        assert_eq!(s.theme(), &Theme::light());
+        s.set_theme(Theme::dark().with_palette(Palette::Warm));
+        assert_eq!(s.theme().background, Theme::dark().background);
+        assert_eq!(s.theme().series, Palette::Warm.colors());
+    }
+
+    #[test]
+    fn set_series_color_pads_and_renders() {
+        let mut s = state();
+        s.add_y("profit"); // two series: revenue, profit
+        // Color the second series red; the first is padded from the theme.
+        s.set_series_color(1, Color::rgb(0xff, 0x00, 0x00));
+        let palette = s.spec().config.palette.as_ref().expect("palette set");
+        assert_eq!(palette.len(), 2);
+        assert_eq!(palette[1], "#ff0000");
+        // The padded first entry is the theme's first series color.
+        assert_eq!(palette[0], "#1f77b4");
+        // The override shows up in the rendered SVG.
+        let svg = s.render(&PlottersSvg).expect("render").svg.clone();
+        assert!(svg.to_uppercase().contains("FF0000"), "override color missing");
+        // Reset drops the override.
+        s.clear_palette();
+        assert!(s.spec().config.palette.is_none());
+    }
+
+    #[test]
+    fn size_and_theta_channels_bind_and_clear() {
+        let mut s = state();
+        s.set_size(Some("revenue"));
+        s.set_theta(Some("profit"));
+        assert_eq!(s.spec().size_field(), Some(("revenue", None)));
+        assert_eq!(s.spec().theta_field(), Some(("profit", None)));
+        s.set_size(None);
+        s.set_theta(None);
+        assert_eq!(s.spec().size_field(), None);
+        assert_eq!(s.spec().theta_field(), None);
+    }
+
+    #[test]
+    fn new_option_transitions_change_config() {
+        let mut s = state();
+        s.set_orientation(Some(Orientation::Horizontal));
+        s.set_bins(Some(15));
+        s.set_inner_radius(Some(0.3));
+        let c = &s.spec().config;
+        assert_eq!(c.orientation, Some(Orientation::Horizontal));
+        assert_eq!(c.bins, Some(15));
+        assert_eq!(c.inner_radius, Some(0.3));
+        s.set_orientation(None);
+        s.set_bins(None);
+        s.set_inner_radius(None);
+        let c = &s.spec().config;
+        assert_eq!(c.orientation, None);
+        assert_eq!(c.bins, None);
+        assert_eq!(c.inner_radius, None);
+    }
+
+    #[test]
+    fn scale_edits_compose_kind_domain_zero() {
+        let mut s = state();
+        s.set_scale_kind(Axis::X, ScaleKind::Log);
+        s.set_scale_domain(Axis::X, Some((1.0, 1000.0)));
+        s.set_scale_zero(Axis::X, true);
+        let x = s.spec().config.x_scale.expect("x scale set");
+        assert_eq!(x.kind, ScaleKind::Log);
+        assert_eq!(x.domain, Some((1.0, 1000.0)));
+        assert!(x.zero);
+        // The y axis is untouched.
+        assert_eq!(s.spec().config.y_scale, None);
+        // set_y_scale writes the whole value; clearing restores the linear identity.
+        s.set_y_scale(None);
+        assert_eq!(s.spec().config.y_scale, None);
+    }
+
+    #[test]
+    fn series_names_wide_are_y_fields() {
+        let mut s = state();
+        s.add_y("profit");
+        assert_eq!(s.series_names(), vec!["revenue", "profit"]);
+    }
+
+    #[test]
+    fn series_names_long_are_category_values() {
+        let csv = b"day,metric,value\nmon,a,1\nmon,b,2\ntue,a,3\ntue,b,4\n";
+        let spec = ChartSpec::from_yaml("mark: line\nx: day\ny: value\ncolor: metric\n").unwrap();
+        let s = BuilderState::new(
+            spec,
+            Table::from_csv(csv).unwrap(),
+            Theme::default(),
+            Size { width: 320, height: 240 },
+        );
+        let mut names = s.series_names();
+        names.sort();
+        assert_eq!(names, vec!["a", "b"]);
     }
 }

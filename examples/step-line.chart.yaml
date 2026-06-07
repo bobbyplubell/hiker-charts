@@ -1,0 +1,9 @@
+mark: line
+x: { field: month, type: temporal }
+y: [revenue, profit]
+config:
+  title: Monthly sales (step)
+  legend: true
+  interpolate: step
+  line_width: 2.5
+  show_grid: false

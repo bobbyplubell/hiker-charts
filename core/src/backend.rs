@@ -4,7 +4,7 @@
 //! maps — so no backend ever sees the original wide/long shape or a plotters type
 //! (SPEC §4.1). A `Backend` paints a chart plus theme and size into a `RenderOutput`.
 
-use crate::dsl::{Config, Mark};
+use crate::dsl::{Config, Mark, Scale};
 use crate::theme::Theme;
 
 /// The pixel dimensions a chart is painted into. Small and `Copy`.
@@ -20,23 +20,39 @@ pub struct Size {
 pub struct ResolvedChart {
     pub mark: Mark,
     pub series: Vec<Series>,
+    /// Radial wedges for the `Arc` mark; empty for cartesian marks (where `series` is used).
+    pub slices: Vec<Slice>,
     pub x_axis: Axis,
     pub y_axis: Axis,
     pub config: Config,
 }
 
-/// One data series: a display name and its `(x, y)` points in `f64` coordinates.
+/// One data series: a display name, its `(x, y)` points in `f64` coordinates, and optional
+/// per-point sizes (parallel to `points`, empty unless a size channel is bound for a bubble
+/// chart — the backend zips points with sizes for the `Point` mark).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Series {
     pub name: String,
     pub points: Vec<(f64, f64)>,
+    pub sizes: Vec<f32>,
 }
 
-/// An axis: its title plus the kind that tells a backend how to format ticks.
+/// One radial wedge of an `Arc` chart: its category label, its angular magnitude, and the
+/// palette index that colors it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Slice {
+    pub label: String,
+    pub value: f64,
+    pub color_index: usize,
+}
+
+/// An axis: its title, the kind that tells a backend how to format ticks, and the scale
+/// transform (log/sqrt/domain/zero) the backend applies to coordinates and tick labels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Axis {
     pub title: String,
     pub kind: AxisKind,
+    pub scale: Scale,
 }
 
 /// How an axis's `f64` coordinates should be interpreted and labeled.
@@ -88,7 +104,8 @@ pub trait Backend {
 
 #[cfg(test)]
 mod tests {
-    use super::{Axis, AxisKind, RenderError, RenderOutput, Series, Size};
+    use super::{Axis, AxisKind, RenderError, RenderOutput, Series, Size, Slice};
+    use crate::dsl::Scale;
 
     #[test]
     fn size_is_copy_and_comparable() {
@@ -102,6 +119,7 @@ mod tests {
         let axis = Axis {
             title: "month".to_string(),
             kind: AxisKind::Categorical(vec!["jan".to_string(), "feb".to_string()]),
+            scale: Scale::default(),
         };
         match axis.kind {
             AxisKind::Categorical(ref labels) => assert_eq!(labels.len(), 2),
@@ -119,9 +137,16 @@ mod tests {
 
     #[test]
     fn series_and_output_construct() {
-        let series = Series { name: "a".to_string(), points: vec![(0.0, 1.0)] };
+        let series = Series { name: "a".to_string(), points: vec![(0.0, 1.0)], sizes: Vec::new() };
         assert_eq!(series.points.len(), 1);
         let out = RenderOutput { svg: "<svg/>".to_string() };
         assert!(out.svg.contains("svg"));
+    }
+
+    #[test]
+    fn slice_holds_label_value_and_color_index() {
+        let s = Slice { label: "north".to_string(), value: 42.0, color_index: 2 };
+        assert_eq!(s.label, "north");
+        assert_eq!(s.color_index, 2);
     }
 }

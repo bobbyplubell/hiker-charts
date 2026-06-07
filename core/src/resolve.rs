@@ -6,41 +6,127 @@
 //! stable categorical index), rows with a missing x or y are dropped with a
 //! diagnostic, and axis kinds plus label maps are recorded for tick formatting.
 
-use crate::backend::{Axis, AxisKind, ResolvedChart, Series};
+use crate::backend::{Axis, AxisKind, ResolvedChart, Series, Slice};
 use crate::data::Table;
 use crate::diag::Diagnostic;
-use crate::dsl::{ChartSpec, DataType};
+use crate::dsl::{ChartSpec, DataType, Mark, Scale};
+use crate::registry::caps;
 use crate::typing::{coerce, infer_type, Value};
+
+/// The default histogram bucket count when `config.bins` is unset (IMPLEMENTATION §17.4).
+const DEFAULT_BINS: usize = 20;
 
 /// Resolve a spec and table to a renderer-neutral chart, or a list of errors.
 /// Errors are returned when a required channel is absent or a referenced column is
 /// missing; dropped rows yield warnings on the returned chart's behalf (logged via
-/// the error path only when they leave no drawable data).
+/// the error path only when they leave no drawable data). The mark drives the lowering:
+/// `Arc` aggregates radial slices, `Histogram` bins the x column, and the cartesian marks
+/// build `(x, y)` series. Bound channels are validated against the mark's registry caps.
 pub fn resolve(spec: &ChartSpec, table: &Table) -> Result<ResolvedChart, Vec<Diagnostic>> {
     let mut diags = Vec::new();
+    validate_channels(spec, &mut diags);
+    if spec.mark == Mark::Arc {
+        return resolve_arc(spec, table, diags);
+    }
+    if spec.mark == Mark::Histogram {
+        return resolve_histogram(spec, table, diags);
+    }
+    resolve_cartesian(spec, table, diags)
+}
+
+/// Resolve a cartesian mark (`Bar`/`Line`/`Point`/`Area`): x + y series, sizes, and scaled
+/// axes. Pulled out of `resolve` so the top-level dispatch stays a terse three-way branch.
+fn resolve_cartesian(
+    spec: &ChartSpec,
+    table: &Table,
+    mut diags: Vec<Diagnostic>,
+) -> Result<ResolvedChart, Vec<Diagnostic>> {
     let x = match resolve_x(spec, table, &mut diags) {
         Some(x) => x,
         None => return Err(diags),
     };
-    let series = match build_series(spec, table, &x, &mut diags) {
+    let mut series = match build_series(spec, table, &x, &mut diags) {
         Some(series) => series,
         None => return Err(diags),
     };
+    fill_sizes(spec, table, &x, &mut series, &mut diags);
+    warn_scale_drops(spec, &series, &mut diags);
     let x_axis = Axis {
         title: spec.config.x_title.clone().unwrap_or_else(|| x.field.clone()),
         kind: x.kind,
+        scale: spec.config.x_scale.unwrap_or_default(),
     };
     let y_axis = Axis {
         title: spec.config.y_title.clone().unwrap_or_else(|| y_axis_title(spec)),
         kind: AxisKind::Quantitative,
+        scale: spec.config.y_scale.unwrap_or_default(),
     };
     Ok(ResolvedChart {
         mark: spec.mark,
         series,
+        slices: Vec::new(),
         x_axis,
         y_axis,
         config: spec.config.clone(),
     })
+}
+
+/// Warn when a bound channel is not in the mark's capability set (SPEC §2.2): e.g. a `size`
+/// channel on a `Bar`, or a `theta` channel on a cartesian mark. Forward-compat — the value
+/// stays in the spec, it is simply ignored by the resolver and the panel hides its control.
+fn validate_channels(spec: &ChartSpec, diags: &mut Vec<Diagnostic>) {
+    let ch = caps(spec.mark).channels;
+    let mark = spec.mark;
+    let mut warn = |bound: bool, allowed: bool, name: &str| {
+        if bound && !allowed {
+            diags.push(Diagnostic::warning(format!(
+                "channel `{name}` is ignored by mark `{mark:?}`"
+            )));
+        }
+    };
+    warn(spec.x.is_some(), ch.x, "x");
+    warn(spec.y.is_some(), ch.y, "y");
+    warn(spec.color.is_some(), ch.color, "color");
+    warn(spec.size.is_some(), ch.size, "size");
+    warn(spec.theta.is_some(), ch.theta, "theta");
+}
+
+/// Fill the (single) series' `sizes` from the size channel when the mark accepts it
+/// (`Point`). The size column is coerced quantitative; one value per *surviving* point,
+/// aligned to the rows that produced the points (those with both x and y present — the same
+/// filter `zip_points` applies). Left empty when no size channel is bound or unsupported.
+fn fill_sizes(
+    spec: &ChartSpec,
+    table: &Table,
+    x: &ResolvedX,
+    series: &mut [Series],
+    diags: &mut Vec<Diagnostic>,
+) {
+    let Some((field, _)) = spec.size_field() else { return };
+    if !caps(spec.mark).channels.size {
+        return;
+    }
+    let Some(column) = table.column(field) else {
+        diags.push(Diagnostic::warning(format!("size column `{field}` not found in data")));
+        return;
+    };
+    // A size channel only maps one row per point in the single-series case; it applies to
+    // the first series and is ignored under a color/wide split (multi-series bubble is out
+    // of scope per IMPLEMENTATION §17.4).
+    let (y_field, _) = spec.y_fields().into_iter().next().unwrap_or(("", None));
+    let Some(y_col) = table.column(y_field) else { return };
+    let Some(s) = series.first_mut() else { return };
+    let mut sizes = Vec::with_capacity(s.points.len());
+    for (i, x_val) in x.values.iter().enumerate() {
+        let y_present = as_number(y_col.cells.get(i).map_or("", String::as_str)).is_some();
+        if x_val.is_some() && y_present {
+            let cell = column.cells.get(i).map_or("", String::as_str);
+            sizes.push(as_number(cell).unwrap_or(0.0) as f32);
+        }
+    }
+    if sizes.len() == s.points.len() {
+        s.sizes = sizes;
+    }
 }
 
 /// The resolved x channel: its source field name, per-row `f64` values (or `None`
@@ -176,6 +262,7 @@ fn wide_series(
         series.push(Series {
             name: (*field).to_string(),
             points,
+            sizes: Vec::new(),
         });
     }
     Some(series)
@@ -199,6 +286,7 @@ fn single_series(
     Some(vec![Series {
         name: y_field.to_string(),
         points,
+        sizes: Vec::new(),
     }])
 }
 
@@ -245,7 +333,7 @@ fn long_series(
         names
             .into_iter()
             .zip(groups)
-            .map(|(name, points)| Series { name, points })
+            .map(|(name, points)| Series { name, points, sizes: Vec::new() })
             .collect(),
     )
 }
@@ -269,6 +357,216 @@ fn zip_points(
         }
     }
     points
+}
+
+/// Warn when a non-linear axis scale will silently drop points the backend cannot transform
+/// (log of `<= 0`, sqrt of `< 0`). The backend's `Scale::forward` is the actual filter; this
+/// surfaces the loss to the author per IMPLEMENTATION §17.4.
+fn warn_scale_drops(spec: &ChartSpec, series: &[Series], diags: &mut Vec<Diagnostic>) {
+    let x_scale = spec.config.x_scale.unwrap_or_default();
+    let y_scale = spec.config.y_scale.unwrap_or_default();
+    let mut x_drops = 0_usize;
+    let mut y_drops = 0_usize;
+    for s in series {
+        for &(x, y) in &s.points {
+            if x_scale.forward(x).is_none() {
+                x_drops += 1;
+            }
+            if y_scale.forward(y).is_none() {
+                y_drops += 1;
+            }
+        }
+    }
+    if x_drops > 0 {
+        diags.push(Diagnostic::warning(format!(
+            "x scale drops {x_drops} non-positive point(s) the transform cannot map"
+        )));
+    }
+    if y_drops > 0 {
+        diags.push(Diagnostic::warning(format!(
+            "y scale drops {y_drops} non-positive point(s) the transform cannot map"
+        )));
+    }
+}
+
+/// Resolve a `Histogram`: bin the numeric `x` column into equal-width buckets over its data
+/// range and emit one series of `(bin_center, count)`. The x axis is quantitative (the
+/// binned value) and the y axis is the computed count. `config.bins` sets the bucket count
+/// (default 20). Errors when x is unbound/missing or no numeric value exists to bin.
+fn resolve_histogram(
+    spec: &ChartSpec,
+    table: &Table,
+    mut diags: Vec<Diagnostic>,
+) -> Result<ResolvedChart, Vec<Diagnostic>> {
+    let (field, _) = match spec.x_field() {
+        Some(parts) => parts,
+        None => {
+            diags.push(Diagnostic::error("histogram spec has no `x` channel to bin"));
+            return Err(diags);
+        }
+    };
+    let Some(column) = table.column(field) else {
+        diags.push(Diagnostic::error(format!("x column `{field}` not found in data")));
+        return Err(diags);
+    };
+    let values: Vec<f64> = column.cells.iter().filter_map(|c| as_number(c)).collect();
+    let bins = spec.config.bins.unwrap_or(DEFAULT_BINS).max(1);
+    let points = match bin_counts(&values, bins) {
+        Some(points) => points,
+        None => {
+            diags.push(Diagnostic::error("histogram has no numeric values to bin"));
+            return Err(diags);
+        }
+    };
+    if points.iter().all(|&(_, count)| count == 0.0) {
+        diags.push(Diagnostic::warning("histogram produced only empty bins"));
+    }
+    let x_axis = Axis {
+        title: spec.config.x_title.clone().unwrap_or_else(|| field.to_string()),
+        kind: AxisKind::Quantitative,
+        scale: spec.config.x_scale.unwrap_or_default(),
+    };
+    let y_axis = Axis {
+        title: spec.config.y_title.clone().unwrap_or_else(|| "count".to_string()),
+        kind: AxisKind::Quantitative,
+        scale: spec.config.y_scale.unwrap_or_default(),
+    };
+    Ok(ResolvedChart {
+        mark: spec.mark,
+        series: vec![Series { name: String::new(), points, sizes: Vec::new() }],
+        slices: Vec::new(),
+        x_axis,
+        y_axis,
+        config: spec.config.clone(),
+    })
+}
+
+/// Bin `values` into `bins` equal-width buckets over `[min, max]`, returning one
+/// `(bin_center, count)` per bucket. `None` when there are no values. A zero-width range
+/// (all values equal) collapses to a single populated bin centered on that value.
+fn bin_counts(values: &[f64], bins: usize) -> Option<Vec<(f64, f64)>> {
+    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if !min.is_finite() || !max.is_finite() {
+        return None;
+    }
+    if (max - min).abs() < f64::EPSILON {
+        return Some(vec![(min, values.len() as f64)]);
+    }
+    let width = (max - min) / bins as f64;
+    let mut counts = vec![0.0_f64; bins];
+    for &v in values {
+        let mut idx = ((v - min) / width) as usize;
+        if idx >= bins {
+            idx = bins - 1; // the maximum value lands in the last bucket
+        }
+        counts[idx] += 1.0;
+    }
+    Some(
+        counts
+            .into_iter()
+            .enumerate()
+            .map(|(i, count)| (width.mul_add(i as f64 + 0.5, min), count))
+            .collect(),
+    )
+}
+
+/// Resolve an `Arc`: group rows by the `color`/category field, sum the `theta` field per
+/// group, and emit one `Slice` per group (in first-seen order) with a stable color index.
+/// `series` and the axes are left empty/unused. Errors when theta or color is unbound, the
+/// columns are missing, or no positive-magnitude slice survives.
+fn resolve_arc(
+    spec: &ChartSpec,
+    table: &Table,
+    mut diags: Vec<Diagnostic>,
+) -> Result<ResolvedChart, Vec<Diagnostic>> {
+    let slices = match build_slices(spec, table, &mut diags) {
+        Some(slices) => slices,
+        None => return Err(diags),
+    };
+    Ok(ResolvedChart {
+        mark: spec.mark,
+        series: Vec::new(),
+        slices,
+        x_axis: empty_axis(),
+        y_axis: empty_axis(),
+        config: spec.config.clone(),
+    })
+}
+
+/// An unused placeholder axis for radial marks (no cartesian plane).
+fn empty_axis() -> Axis {
+    Axis { title: String::new(), kind: AxisKind::Quantitative, scale: Scale::default() }
+}
+
+/// Group by the color category and sum theta per group into `Slice`s. Returns `None` (with
+/// an error pushed) when theta or color is unbound, a column is missing, or nothing draws.
+fn build_slices(
+    spec: &ChartSpec,
+    table: &Table,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<Vec<Slice>> {
+    let (theta_field, _) = match spec.theta_field() {
+        Some(parts) => parts,
+        None => {
+            diags.push(Diagnostic::error("arc spec has no `theta` channel"));
+            return None;
+        }
+    };
+    let (color_field, _) = match spec.color_field() {
+        Some(parts) => parts,
+        None => {
+            diags.push(Diagnostic::error("arc spec has no `color` channel to group slices"));
+            return None;
+        }
+    };
+    let theta_col = column_or_err(table, theta_field, "theta", diags)?;
+    let color_col = column_or_err(table, color_field, "color", diags)?;
+    let slices = aggregate_slices(&color_col.cells, &theta_col.cells);
+    if slices.is_empty() {
+        diags.push(Diagnostic::error("arc has no positive slices after aggregation"));
+        return None;
+    }
+    Some(slices)
+}
+
+/// Sum theta per color category in first-seen order, dropping non-positive totals so a wedge
+/// is always drawable. Each surviving group gets a sequential `color_index`.
+fn aggregate_slices(color_cells: &[String], theta_cells: &[String]) -> Vec<Slice> {
+    let mut labels: Vec<String> = Vec::new();
+    let mut totals: Vec<f64> = Vec::new();
+    for (i, label) in color_cells.iter().enumerate() {
+        let Some(v) = as_number(theta_cells.get(i).map_or("", String::as_str)) else { continue };
+        let slot = labels.iter().position(|l| l == label).unwrap_or_else(|| {
+            labels.push(label.clone());
+            totals.push(0.0);
+            labels.len() - 1
+        });
+        totals[slot] += v;
+    }
+    labels
+        .into_iter()
+        .zip(totals)
+        .filter(|&(_, value)| value > 0.0)
+        .enumerate()
+        .map(|(color_index, (label, value))| Slice { label, value, color_index })
+        .collect()
+}
+
+/// Look up a column by name, pushing an error diagnostic and returning `None` if absent.
+fn column_or_err<'a>(
+    table: &'a Table,
+    field: &str,
+    role: &str,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<&'a crate::data::Column> {
+    match table.column(field) {
+        Some(col) => Some(col),
+        None => {
+            diags.push(Diagnostic::error(format!("{role} column `{field}` not found in data")));
+            None
+        }
+    }
 }
 
 /// Derive a default y-axis title: the single y field name, or "value" for multi.
@@ -359,5 +657,88 @@ mod tests {
             b"month,v\njan,1\nfeb,\nmar,3\n",
         );
         assert_eq!(c.series[0].points, vec![(0.0, 1.0), (2.0, 3.0)]);
+    }
+
+    /// Histogram bins the x column into equal-width buckets; y axis is titled "count".
+    #[test]
+    fn histogram_bins_x_into_counts() {
+        let c = chart(
+            "mark: histogram\nx: v\nconfig:\n  bins: 2\n",
+            b"v\n0\n1\n2\n3\n4\n",
+        );
+        assert_eq!(c.series.len(), 1);
+        let counts: Vec<f64> = c.series[0].points.iter().map(|&(_, n)| n).collect();
+        // range 0..4, 2 bins of width 2: [0,2) gets 0,1; the max 4 lands in the last bin.
+        assert_eq!(counts.iter().sum::<f64>(), 5.0);
+        assert_eq!(counts.len(), 2);
+        assert_eq!(c.y_axis.title, "count");
+        assert!(c.slices.is_empty());
+    }
+
+    /// Histogram bin centers sit at the middle of each equal-width bucket.
+    #[test]
+    fn histogram_bin_centers_are_midpoints() {
+        let c = chart(
+            "mark: histogram\nx: v\nconfig:\n  bins: 2\n",
+            b"v\n0\n10\n",
+        );
+        let centers: Vec<f64> = c.series[0].points.iter().map(|&(x, _)| x).collect();
+        assert_eq!(centers, vec![2.5, 7.5]);
+    }
+
+    /// Arc groups by color and sums theta per group into slices; series stays empty.
+    #[test]
+    fn arc_aggregates_slices_by_color() {
+        let c = chart(
+            "mark: arc\ntheta: amt\ncolor: region\n",
+            b"region,amt\nnorth,10\nsouth,5\nnorth,15\n",
+        );
+        assert!(c.series.is_empty());
+        assert_eq!(c.slices.len(), 2);
+        assert_eq!(c.slices[0].label, "north");
+        assert_eq!(c.slices[0].value, 25.0);
+        assert_eq!(c.slices[0].color_index, 0);
+        assert_eq!(c.slices[1].label, "south");
+        assert_eq!(c.slices[1].value, 5.0);
+        assert_eq!(c.slices[1].color_index, 1);
+    }
+
+    /// Arc without a theta channel is a hard error.
+    #[test]
+    fn arc_missing_theta_errors() {
+        let spec = ChartSpec::from_yaml("mark: arc\ncolor: region\n").unwrap();
+        let table = Table::from_csv(b"region,amt\nnorth,10\n").unwrap();
+        let errs = resolve(&spec, &table).unwrap_err();
+        assert!(errs.iter().any(|d| d.message.contains("theta")));
+    }
+
+    /// A bound size channel fills the (single) series' sizes for a point mark.
+    #[test]
+    fn size_channel_populates_sizes_for_points() {
+        let c = chart(
+            "mark: point\nx: a\ny: b\nsize: pop\n",
+            b"a,b,pop\n1,2,100\n3,4,200\n",
+        );
+        assert_eq!(c.series[0].sizes, vec![100.0, 200.0]);
+    }
+
+    /// A size channel on a mark that does not accept it leaves sizes empty and warns.
+    #[test]
+    fn size_on_bar_is_ignored_with_warning() {
+        let spec = ChartSpec::from_yaml("mark: bar\nx: a\ny: b\nsize: pop\n").unwrap();
+        let table = Table::from_csv(b"a,b,pop\n1,2,100\n").unwrap();
+        let c = resolve(&spec, &table).unwrap();
+        assert!(c.series[0].sizes.is_empty());
+    }
+
+    /// Config axis scales are copied onto the resolved axes.
+    #[test]
+    fn config_scales_copied_into_axes() {
+        let c = chart(
+            "mark: line\nx: a\ny: b\nconfig:\n  y_scale:\n    kind: log\n",
+            b"a,b\n1,10\n2,100\n",
+        );
+        assert_eq!(c.y_axis.scale.kind, crate::dsl::ScaleKind::Log);
+        assert_eq!(c.x_axis.scale.kind, crate::dsl::ScaleKind::Linear);
     }
 }

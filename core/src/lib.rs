@@ -13,6 +13,7 @@ pub mod diag;
 pub mod dsl;
 pub mod host;
 pub mod identity;
+pub mod registry;
 pub mod resolve;
 pub mod theme;
 pub mod typing;
