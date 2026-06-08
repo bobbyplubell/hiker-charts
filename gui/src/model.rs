@@ -499,11 +499,51 @@ impl BuilderState {
 
     // --- Export / save-back ---------------------------------------------------
 
-    /// Serialize the spec as a chart block: `to_yaml` wrapped in a ```chart fence
-    /// (SPEC §8.2). "Copy" is the host pushing this string to the clipboard.
+    /// Serialize the spec as a chart block for "Copy" (SPEC §8.2). Defaults to a
+    /// renderable block: if the spec already references external data (`data:`),
+    /// emit that reference (config only); otherwise emit a **self-contained**
+    /// block (config + `---` + the data as CSV) so a builder seeded from a raw
+    /// table — e.g. a `.csv` opened in a tab — still produces a block that
+    /// renders anywhere. The host picks an explicit mode with
+    /// [`to_block_inline`](Self::to_block_inline) /
+    /// [`to_block_reference`](Self::to_block_reference).
     #[must_use]
     pub fn to_block(&self) -> String {
+        if self.spec.data.is_some() {
+            let yaml = self.spec.to_yaml().unwrap_or_default();
+            format!("```chart\n{}```", ensure_trailing_newline(&yaml))
+        } else {
+            self.to_block_inline()
+        }
+    }
+
+    /// Serialize a **self-contained** chart block: the config, a `---` line, then
+    /// the data as CSV. The verbatim `csv_body` is re-emitted when present (an
+    /// opened inline block), else the table is serialized via
+    /// [`Table::to_csv`](hiker_charts_core::data::Table::to_csv). Renders with no
+    /// external file dependency. status: chart-export-mode
+    #[must_use]
+    pub fn to_block_inline(&self) -> String {
         let yaml = self.spec.to_yaml().unwrap_or_default();
+        let csv = self.csv_body.clone().unwrap_or_else(|| self.table.to_csv());
+        format!(
+            "```chart\n{}---\n{}```",
+            ensure_trailing_newline(&yaml),
+            ensure_trailing_newline(&csv),
+        )
+    }
+
+    /// Serialize a chart block that **references external data**: the config with
+    /// `data: <data_path>` set (the host supplies the vault-relative path), no
+    /// inline CSV. Keeps the note small and re-renders live when the file
+    /// changes, at the cost of depending on the file staying put. Does not mutate
+    /// the live spec — the `data:` binding is applied to a clone for this emit
+    /// only. status: chart-export-mode
+    #[must_use]
+    pub fn to_block_reference(&self, data_path: &str) -> String {
+        let mut spec = self.spec.clone();
+        spec.data = Some(data_path.to_string());
+        let yaml = spec.to_yaml().unwrap_or_default();
         format!("```chart\n{}```", ensure_trailing_newline(&yaml))
     }
 
@@ -656,16 +696,51 @@ mod tests {
     }
 
     #[test]
-    fn to_block_round_trips_through_from_yaml() {
+    fn to_block_is_self_contained_and_round_trips() {
+        // status: chart-export-mode — a builder with inline data (no `data:`
+        // ref) exports a self-contained block: config + `---` + CSV. It
+        // round-trips through `parse_block` to the same spec, with a table.
+        use hiker_charts_core::block::parse_block;
         let s = state();
         let block = s.to_block();
         assert!(block.starts_with("```chart\n"));
         assert!(block.ends_with("```"));
-        let inner = block
-            .trim_start_matches("```chart\n")
-            .trim_end_matches("```");
-        let reparsed = ChartSpec::from_yaml(inner).unwrap();
-        assert_eq!(&reparsed, s.spec());
+        assert!(block.contains("---\n"), "self-contained block carries inline CSV");
+        let inner = block.trim_start_matches("```chart\n").trim_end_matches("```");
+        let parsed = parse_block(inner).expect("self-contained block parses");
+        assert_eq!(&parsed.spec, s.spec());
+        let table = parsed.table.expect("inline CSV yields a table");
+        assert_eq!(table.columns.len(), 3, "month,revenue,profit survive the round-trip");
+    }
+
+    #[test]
+    fn to_block_reference_emits_data_path_and_no_csv() {
+        // status: chart-export-mode — the reference export injects `data:` and
+        // omits the inline CSV, without mutating the live spec.
+        use hiker_charts_core::block::parse_block;
+        let s = state();
+        let block = s.to_block_reference("data/sales.csv");
+        assert!(!block.contains("---\n"), "reference block carries no inline CSV");
+        let inner = block.trim_start_matches("```chart\n").trim_end_matches("```");
+        let parsed = parse_block(inner).expect("reference block parses");
+        assert_eq!(parsed.spec.data.as_deref(), Some("data/sales.csv"));
+        assert!(parsed.table.is_none());
+        // The live spec is untouched (no `data:` leaked in).
+        assert_eq!(s.spec().data, None);
+    }
+
+    #[test]
+    fn to_block_inline_serializes_table_without_csv_body() {
+        // status: chart-export-mode — a builder seeded from a raw table (no
+        // verbatim `csv_body`, like a `.csv`-tab builder) still emits inline CSV
+        // by serializing the table.
+        use hiker_charts_core::block::parse_block;
+        let s = state(); // BuilderState::new → csv_body is None
+        let block = s.to_block_inline();
+        let inner = block.trim_start_matches("```chart\n").trim_end_matches("```");
+        let parsed = parse_block(inner).expect("parses");
+        let table = parsed.table.expect("table serialized into the block");
+        assert_eq!(table.row_count(), 2, "both data rows serialized");
     }
 
     #[test]

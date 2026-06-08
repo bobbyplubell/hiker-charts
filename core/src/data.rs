@@ -52,6 +52,36 @@ impl Table {
     pub fn row_count(&self) -> usize {
         self.columns.iter().map(|c| c.cells.len()).max().unwrap_or(0)
     }
+
+    /// Serialize the table back to a CSV string: the header row, then one record
+    /// per row (a short column contributes an empty cell). The inverse of
+    /// [`from_csv`](Self::from_csv), used to emit a self-contained ```` ```chart
+    /// ```` block from a builder seeded with a table rather than verbatim CSV
+    /// bytes. Round-trips through `csv`'s quoting, so commas / quotes / newlines
+    /// in a cell survive. Returns an empty string on the (practically
+    /// unreachable) writer error.
+    #[must_use]
+    pub fn to_csv(&self) -> String {
+        let mut wtr = csv::Writer::from_writer(Vec::new());
+        let headers: Vec<&str> = self.columns.iter().map(|c| c.name.as_str()).collect();
+        if wtr.write_record(&headers).is_err() {
+            return String::new();
+        }
+        for row in 0..self.row_count() {
+            let record: Vec<&str> = self
+                .columns
+                .iter()
+                .map(|c| c.cells.get(row).map_or("", String::as_str))
+                .collect();
+            if wtr.write_record(&record).is_err() {
+                return String::new();
+            }
+        }
+        wtr.into_inner()
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -72,6 +102,22 @@ mod tests {
     fn missing_column_is_none() {
         let table = Table::from_csv(b"a,b\n1,2\n").unwrap();
         assert!(table.column("c").is_none());
+    }
+
+    #[test]
+    fn to_csv_round_trips() {
+        let csv = "month,revenue\njan,100\nfeb,140\n";
+        let table = Table::from_csv(csv.as_bytes()).unwrap();
+        let out = table.to_csv();
+        assert_eq!(Table::from_csv(out.as_bytes()).unwrap(), table);
+        assert_eq!(out, csv);
+    }
+
+    #[test]
+    fn to_csv_quotes_cells_with_commas() {
+        let table = Table::from_csv(b"name,note\nx,\"a,b\"\n").unwrap();
+        // The comma-bearing cell is re-quoted, so the round-trip is exact.
+        assert_eq!(Table::from_csv(table.to_csv().as_bytes()).unwrap(), table);
     }
 
     #[test]
