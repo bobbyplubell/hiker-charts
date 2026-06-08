@@ -22,9 +22,22 @@ pub struct ResolvedChart {
     pub series: Vec<Series>,
     /// Radial wedges for the `Arc` mark; empty for cartesian marks (where `series` is used).
     pub slices: Vec<Slice>,
+    /// The grid for the `Table` mark; `None` for plotted marks. Cells are already coerced and
+    /// formatted to display strings so the backend only lays them out.
+    pub table: Option<TableView>,
     pub x_axis: Axis,
     pub y_axis: Axis,
     pub config: Config,
+}
+
+/// A renderer-neutral resolved table for the `Table` mark: column headers and row-major
+/// formatted cells, in the natural one-row-per-record orientation. `transpose` asks the
+/// backend to draw fields down the left and records across instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TableView {
+    pub headers: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub transpose: bool,
 }
 
 /// One data series: a display name, its `(x, y)` points in `f64` coordinates, and optional

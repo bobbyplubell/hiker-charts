@@ -10,6 +10,7 @@ pub mod backend;
 pub mod data;
 pub mod deps;
 pub mod diag;
+pub mod display;
 pub mod dsl;
 pub mod host;
 pub mod identity;

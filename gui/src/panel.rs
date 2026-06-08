@@ -18,16 +18,17 @@ use hiker_charts_core::registry::caps;
 use hiker_charts_core::theme::{Color, Palette, Theme};
 
 use crate::model::{Axis, BuilderState, Channel, SeriesMode};
-use crate::preview::{preview, View};
+use crate::preview::{preview, PaneMode, View};
 
 /// All marks, in dropdown order, with their human labels.
-const MARKS: [(Mark, &str); 6] = [
+const MARKS: [(Mark, &str); 7] = [
     (Mark::Bar, "Bar"),
     (Mark::Line, "Line"),
     (Mark::Point, "Point"),
     (Mark::Area, "Area"),
     (Mark::Histogram, "Histogram"),
     (Mark::Arc, "Arc"),
+    (Mark::Table, "Table"),
 ];
 
 /// The axis scale kinds, in dropdown order, with their human labels.
@@ -102,9 +103,32 @@ pub fn panel(
             });
         });
         ui.separator();
-        let _ = preview(state, camera, view, ui);
+        right_pane(state, camera, view, ui);
     });
     exported
+}
+
+/// The right side of the builder: a Chart/Data tab row, then either the interactive chart
+/// preview or the read-only parsed-data grid, depending on `view.mode`.
+fn right_pane(
+    state: &mut BuilderState,
+    camera: &mut crate::camera::Camera,
+    view: &mut View,
+    ui: &mut egui::Ui,
+) {
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut view.mode, PaneMode::Chart, "Chart");
+            ui.selectable_value(&mut view.mode, PaneMode::Data, "Data");
+        });
+        ui.separator();
+        match view.mode {
+            PaneMode::Chart => {
+                let _ = preview(state, camera, view, ui);
+            }
+            PaneMode::Data => crate::data_view::data_view(state, ui),
+        }
+    });
 }
 
 /// The scrollable stack of every control, top to bottom, gated by the mark's
@@ -147,6 +171,12 @@ fn control_column(
 /// wide/long series toggle is shown only for cartesian multi-series marks (those
 /// with both a y and a color channel).
 fn channel_section(state: &mut BuilderState, ui: &mut egui::Ui) {
+    // The table mark has no encoding channels; its "inputs" are the columns it shows, so it
+    // gets a bespoke column picker here instead of the channel combos.
+    if state.spec().mark == Mark::Table {
+        table_section(state, ui);
+        return;
+    }
     let channels = caps(state.spec().mark).channels;
     if channels.x {
         field_picker(state, Channel::X, "X axis", ui);
@@ -203,6 +233,55 @@ fn options_section(state: &mut BuilderState, ui: &mut egui::Ui) {
     }
     if caps(state.spec().mark).cartesian {
         grid_checkbox(state, ui);
+    }
+}
+
+/// The `Table` mark's column controls: an ordered, checkable list of every data column
+/// (checked = shown), each with up/down reorder buttons, plus a transpose toggle. Edits route
+/// through `toggle_column`/`move_column`/`set_transpose`. Actions are gathered during layout and
+/// applied after, so the immutable reads of the column lists don't clash with the mutation.
+fn table_section(state: &mut BuilderState, ui: &mut egui::Ui) {
+    enum Act {
+        Toggle(String),
+        Move(usize, bool),
+    }
+    ui.label("Columns");
+    let shown = state.shown_columns();
+    let all: Vec<String> = state.columns().iter().map(|c| (*c).to_string()).collect();
+    let last = shown.len().saturating_sub(1);
+    let mut act: Option<Act> = None;
+
+    for (i, name) in shown.iter().enumerate() {
+        ui.horizontal(|ui| {
+            let mut on = true;
+            if ui.checkbox(&mut on, name).changed() {
+                act = Some(Act::Toggle(name.clone()));
+            }
+            if ui.add_enabled(i > 0, egui::Button::new("↑").small()).clicked() {
+                act = Some(Act::Move(i, true));
+            }
+            if ui.add_enabled(i < last, egui::Button::new("↓").small()).clicked() {
+                act = Some(Act::Move(i, false));
+            }
+        });
+    }
+    // Hidden columns appear unchecked at the bottom so they can be added back.
+    for name in all.iter().filter(|n| !shown.contains(n)) {
+        let mut on = false;
+        if ui.checkbox(&mut on, name).changed() {
+            act = Some(Act::Toggle(name.clone()));
+        }
+    }
+    match act {
+        Some(Act::Toggle(n)) => state.toggle_column(&n),
+        Some(Act::Move(i, up)) => state.move_column(i, up),
+        None => {}
+    }
+
+    ui.separator();
+    let mut transpose = state.spec().config.transpose;
+    if ui.checkbox(&mut transpose, "Transpose (fields as rows)").changed() {
+        state.set_transpose(transpose);
     }
 }
 
@@ -367,6 +446,11 @@ fn config_controls(state: &mut BuilderState, ui: &mut egui::Ui) {
             state.set_title(opt(&title));
         }
     });
+    // Axis titles and the legend are meaningless for a table (it's a grid, not a plot); only
+    // the title — drawn as a caption — applies. Every other mark shows the full set.
+    if state.spec().mark == Mark::Table {
+        return;
+    }
     let mut x_title = state.spec().config.x_title.clone().unwrap_or_default();
     ui.horizontal(|ui| {
         ui.label("X title");

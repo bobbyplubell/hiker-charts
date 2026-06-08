@@ -8,9 +8,10 @@
 use std::ops::Range;
 
 use hiker_charts_core::backend::{
-    Axis, AxisKind, Backend, RenderError, RenderOutput, ResolvedChart, Series, Size,
+    Axis, AxisKind, Backend, RenderError, RenderOutput, ResolvedChart, Series, Size, TableView,
 };
 use hiker_charts_core::dsl::{Interpolate, Mark, Orientation, Scale};
+use hiker_charts_core::display::{format_epoch, format_number};
 use hiker_charts_core::registry::caps;
 use hiker_charts_core::theme::{Color, Theme};
 use plotters::chart::{ChartContext, ChartBuilder, SeriesLabelPosition};
@@ -42,7 +43,9 @@ impl Backend for PlottersSvg {
         size: Size,
     ) -> Result<RenderOutput, RenderError> {
         let mut svg = String::new();
-        if caps(chart.mark).cartesian {
+        if chart.mark == Mark::Table {
+            paint_table(chart, theme, size, &mut svg)?;
+        } else if caps(chart.mark).cartesian {
             paint_cartesian(chart, theme, size, &mut svg)?;
         } else {
             paint_radial(chart, theme, size, &mut svg)?;
@@ -72,6 +75,7 @@ fn prepare_cartesian(chart: &ResolvedChart) -> (ResolvedChart, Axis, Axis) {
         mark: chart.mark,
         series,
         slices: Vec::new(),
+        table: None,
         x_axis: x_axis.clone(),
         y_axis: y_axis.clone(),
         config: chart.config.clone(),
@@ -192,8 +196,8 @@ fn draw_mark(ctx: &mut Ctx<'_>, chart: &ResolvedChart, theme: &Theme) -> Result<
         Mark::Bar if horizontal => draw_horizontal_bars(ctx, chart, theme),
         Mark::Bar => draw_bars(ctx, chart, theme),
         Mark::Histogram => draw_histogram(ctx, chart, theme),
-        // Arc is radial and never reaches the cartesian dispatch.
-        Mark::Arc => Ok(()),
+        // Arc and Table are non-cartesian and never reach the cartesian dispatch.
+        Mark::Arc | Mark::Table => Ok(()),
     }
 }
 
@@ -724,42 +728,6 @@ fn tick_formatter(kind: &AxisKind, scale: Scale) -> Box<dyn Fn(f64) -> String> {
     }
 }
 
-/// Format a quantitative tick: integers without a decimal point, others trimmed of trailing
-/// zeros so axis labels stay compact.
-fn format_number(v: f64) -> String {
-    if v.fract() == 0.0 && v.abs() < 1e15 {
-        return format!("{}", v as i64);
-    }
-    let s = format!("{v:.3}");
-    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
-    trimmed.to_string()
-}
-
-/// Format epoch seconds (UTC) back to an ISO date string `YYYY-MM-DD`, the inverse of core's
-/// `parse_date`. Self-contained civil-date math (no chrono, SPEC §4.6); negative/pre-epoch
-/// inputs floor toward the past so the conversion stays total.
-fn format_epoch(secs: i64) -> String {
-    let days = secs.div_euclid(86_400);
-    let (y, m, d) = civil_from_days(days);
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-/// Convert a count of days since the Unix epoch to a `(year, month, day)` civil date using
-/// Howard Hinnant's `civil_from_days` algorithm — pure integer arithmetic, valid for the
-/// proleptic Gregorian calendar and any sign of `z`.
-const fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
 /// Draw a radial `Arc` chart (pie/donut): fill the background, then paint each `Slice` as a
 /// wedge over a pixel-space cartesian area with no mesh or axes, then a swatch legend from
 /// the slice labels. Empty when there are no slices (`RenderError::Empty`).
@@ -895,6 +863,129 @@ fn draw_arc_legend(
         .map_err(backend_err)?;
     }
     Ok(())
+}
+
+/// Draw the `Table` mark as a grid: fill the background, optional caption, then a header
+/// band plus one cell per value over a pixel-space area (no axes/mesh). Column widths are
+/// proportional to content length; `transpose` flips fields to rows and records to columns.
+/// Empty when the resolved table has no header cells (`RenderError::Empty`).
+fn paint_table(
+    chart: &ResolvedChart,
+    theme: &Theme,
+    size: Size,
+    svg: &mut String,
+) -> Result<(), RenderError> {
+    let view = chart.table.as_ref().ok_or(RenderError::Empty)?;
+    let grid = table_grid(view);
+    if grid.cells.is_empty() || grid.cells[0].is_empty() {
+        return Err(RenderError::Empty);
+    }
+    let root = SVGBackend::with_string(svg, (size.width, size.height)).into_drawing_area();
+    root.fill(&to_rgba(theme.background)).map_err(backend_err)?;
+    let fg = to_rgba(theme.foreground);
+    let mut builder = ChartBuilder::on(&root);
+    builder.margin(14);
+    if let Some(title) = chart.config.title.as_deref() {
+        builder.caption(title, (FONT, 22, &fg));
+    }
+    let w = f64::from(size.width);
+    let h = f64::from(size.height);
+    let ctx = builder.build_cartesian_2d(0.0..w, 0.0..h).map_err(backend_err)?;
+    draw_grid(ctx.plotting_area(), &grid, theme, w, h)?;
+    root.present().map_err(backend_err)?;
+    Ok(())
+}
+
+/// A laid-out display grid: row-major `cells`, and which single row/column (if any) is the
+/// styled header band — the top row in natural layout, the left column when transposed.
+struct Grid {
+    cells: Vec<Vec<String>>,
+    header_row: Option<usize>,
+    header_col: Option<usize>,
+}
+
+/// Build the display [`Grid`] from a resolved [`TableView`]: natural layout puts headers on the
+/// top row above the record rows; transposed layout runs each field down the left column with
+/// its values spread across.
+fn table_grid(view: &TableView) -> Grid {
+    if view.transpose {
+        let cells = view
+            .headers
+            .iter()
+            .enumerate()
+            .map(|(c, head)| {
+                let mut row = Vec::with_capacity(view.rows.len() + 1);
+                row.push(head.clone());
+                row.extend(view.rows.iter().map(|r| r.get(c).cloned().unwrap_or_default()));
+                row
+            })
+            .collect();
+        Grid { cells, header_row: None, header_col: Some(0) }
+    } else {
+        let mut cells = Vec::with_capacity(view.rows.len() + 1);
+        cells.push(view.headers.clone());
+        cells.extend(view.rows.iter().cloned());
+        Grid { cells, header_row: Some(0), header_col: None }
+    }
+}
+
+/// The drawing area type a grid is painted onto — the chart's pixel-space cartesian plotting
+/// area, the same `ctx.plotting_area()` the arc legend draws onto.
+type Area<'a> = plotters::drawing::DrawingArea<SVGBackend<'a>, Cartesian2d<RangedCoordf64, RangedCoordf64>>;
+
+/// Paint a [`Grid`] into `area` (logical extent `w` x `h`, y increasing upward). Column widths
+/// are proportional to the longest cell text in each column; rows share the height evenly. Each
+/// cell gets a border; header cells get a filled band; text is left-padded in the foreground.
+fn draw_grid(area: &Area<'_>, grid: &Grid, theme: &Theme, w: f64, h: f64) -> Result<(), RenderError> {
+    let rows = grid.cells.len();
+    let cols = grid.cells[0].len();
+    let widths = column_widths(grid, w, cols);
+    let mut x_starts = Vec::with_capacity(cols + 1);
+    let mut acc = 0.0;
+    for &cw in &widths {
+        x_starts.push(acc);
+        acc += cw;
+    }
+    x_starts.push(acc);
+    let rh = h / rows as f64;
+    let fg = to_rgba(theme.foreground);
+    let border = stroke(to_rgba(theme.gridline), 1);
+    // A subtle header band: the gridline color blended toward the foreground.
+    let header_fill: ShapeStyle = to_rgba(theme.gridline).mix(0.45).filled();
+    let font = (h / rows as f64 * 0.5).clamp(9.0, 16.0) as i32;
+
+    for (r, row) in grid.cells.iter().enumerate() {
+        let y_top = h - r as f64 * rh;
+        let y_bot = y_top - rh;
+        for (c, text) in row.iter().enumerate() {
+            let x0 = x_starts[c];
+            let x1 = x_starts[c + 1];
+            let is_header = grid.header_row == Some(r) || grid.header_col == Some(c);
+            if is_header {
+                area.draw(&Rectangle::new([(x0, y_bot), (x1, y_top)], header_fill))
+                    .map_err(backend_err)?;
+            }
+            area.draw(&Rectangle::new([(x0, y_bot), (x1, y_top)], border)).map_err(backend_err)?;
+            let style = TextStyle::from((FONT, font).into_font()).color(&fg);
+            let ty = y_top - rh * 0.5 - f64::from(font) * 0.5;
+            area.draw(&plotters::element::Text::new(text.clone(), (x0 + rh * 0.2, ty), style))
+                .map_err(backend_err)?;
+        }
+    }
+    Ok(())
+}
+
+/// Column widths summing to `w`, each proportional to the longest cell (in chars) in that
+/// column so wide text gets more room. A floor of one keeps an all-empty column visible.
+fn column_widths(grid: &Grid, w: f64, cols: usize) -> Vec<f64> {
+    let mut weights = vec![1.0_f64; cols];
+    for row in &grid.cells {
+        for (c, text) in row.iter().enumerate() {
+            weights[c] = weights[c].max(text.chars().count() as f64);
+        }
+    }
+    let total: f64 = weights.iter().sum();
+    weights.iter().map(|x| w * x / total).collect()
 }
 
 /// Map a plotters drawing error into the core `RenderError::Backend` variant, flattening the

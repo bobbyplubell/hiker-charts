@@ -187,6 +187,56 @@ impl BuilderState {
         self.spec.theta = column.map(|c| FieldDef::Shorthand(c.to_string()));
     }
 
+    // --- Table mark (column selection/order + transpose) ----------------------
+
+    /// The columns the `Table` mark currently shows, in display order: the explicit
+    /// `spec.columns` list if set, otherwise every data column in natural order.
+    #[must_use]
+    pub fn shown_columns(&self) -> Vec<String> {
+        match &self.spec.columns {
+            Some(cols) => cols.clone(),
+            None => self.table.columns.iter().map(|c| c.name.clone()).collect(),
+        }
+    }
+
+    /// Whether `column` is in the table's current shown set.
+    #[must_use]
+    pub fn is_column_shown(&self, column: &str) -> bool {
+        self.shown_columns().iter().any(|c| c == column)
+    }
+
+    /// Include or exclude `column` from the table, materializing the explicit `columns` list on
+    /// first edit (so removing from the implicit "all" set keeps the others). A re-added column
+    /// is appended at the end; reorder it with [`move_column`](Self::move_column).
+    pub fn toggle_column(&mut self, column: &str) {
+        let mut cols = self.shown_columns();
+        if let Some(pos) = cols.iter().position(|c| c == column) {
+            cols.remove(pos);
+        } else {
+            cols.push(column.to_string());
+        }
+        self.spec.columns = Some(cols);
+    }
+
+    /// Move the shown column at `index` one slot toward the front (`up`) or back, materializing
+    /// the explicit list. A no-op at the ends or for an out-of-range index.
+    pub fn move_column(&mut self, index: usize, up: bool) {
+        let mut cols = self.shown_columns();
+        let swap = if up { index.checked_sub(1) } else { index.checked_add(1) };
+        if let Some(j) = swap
+            && index < cols.len()
+            && j < cols.len()
+        {
+            cols.swap(index, j);
+            self.spec.columns = Some(cols);
+        }
+    }
+
+    /// Transpose the table (fields down the left, records across) or restore natural layout.
+    pub const fn set_transpose(&mut self, transpose: bool) {
+        self.spec.config.transpose = transpose;
+    }
+
     /// Switch between wide and long multi-series encodings (SPEC §2.3.1). Wide drops
     /// `color` and keeps the `y` list; long collapses `y` to its first field and
     /// moves the chosen split column into `color`. `long_split` is ignored in wide
@@ -711,6 +761,43 @@ mod tests {
         // set_y_scale writes the whole value; clearing restores the linear identity.
         s.set_y_scale(None);
         assert_eq!(s.spec().config.y_scale, None);
+    }
+
+    #[test]
+    fn table_columns_default_to_all_then_become_explicit() {
+        let mut s = state();
+        // No explicit columns yet: shown set is every data column in order.
+        assert_eq!(s.shown_columns(), vec!["month", "revenue", "profit"]);
+        assert!(s.is_column_shown("revenue"));
+        // Removing one materializes the explicit list of the rest.
+        s.toggle_column("revenue");
+        assert_eq!(s.shown_columns(), vec!["month", "profit"]);
+        assert!(!s.is_column_shown("revenue"));
+        assert_eq!(s.spec().columns.as_deref(), Some(["month", "profit"].map(String::from).as_slice()));
+        // Re-adding appends at the end.
+        s.toggle_column("revenue");
+        assert_eq!(s.shown_columns(), vec!["month", "profit", "revenue"]);
+    }
+
+    #[test]
+    fn move_column_reorders_and_clamps() {
+        let mut s = state();
+        s.move_column(0, false); // month down past revenue
+        assert_eq!(s.shown_columns(), vec!["revenue", "month", "profit"]);
+        s.move_column(0, true); // already at front: no-op
+        assert_eq!(s.shown_columns(), vec!["revenue", "month", "profit"]);
+        s.move_column(2, false); // last item down: no-op
+        assert_eq!(s.shown_columns(), vec!["revenue", "month", "profit"]);
+    }
+
+    #[test]
+    fn table_mark_renders_through_backend() {
+        let mut s = state();
+        s.set_mark(Mark::Table);
+        s.set_transpose(true);
+        assert!(s.spec().config.transpose);
+        let svg = s.render(&PlottersSvg).expect("table renders").svg.clone();
+        assert!(svg.contains("<svg") && svg.contains("revenue"));
     }
 
     #[test]

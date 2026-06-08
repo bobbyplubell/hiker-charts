@@ -3,7 +3,7 @@
 //! empty-chart error path. No golden bytes — plotters' SVG is not byte-stable (SPEC §4.4).
 
 use hiker_charts_core::backend::{
-    Axis, AxisKind, Backend, RenderError, ResolvedChart, Series, Size, Slice,
+    Axis, AxisKind, Backend, RenderError, ResolvedChart, Series, Size, Slice, TableView,
 };
 use hiker_charts_core::dsl::{Config, Interpolate, Mark, Orientation, Scale, ScaleKind};
 use hiker_charts_core::theme::Theme;
@@ -32,6 +32,7 @@ fn two_series(mark: Mark) -> ResolvedChart {
             },
         ],
         slices: Vec::new(),
+        table: None,
         x_axis: quant_axis("x"),
         y_axis: quant_axis("y"),
         config: Config::default(),
@@ -49,6 +50,7 @@ fn single(mark: Mark, points: Vec<(f64, f64)>) -> ResolvedChart {
         mark,
         series: vec![Series { name: String::new(), points, sizes: Vec::new() }],
         slices: Vec::new(),
+        table: None,
         x_axis: quant_axis("x"),
         y_axis: quant_axis("y"),
         config: Config::default(),
@@ -129,6 +131,7 @@ fn wide_multi_series_draws_all_and_legend() {
             Series { name: "profit".to_string(), points: vec![(0.0, 0.5), (1.0, 2.0)], sizes: Vec::new() },
         ],
         slices: Vec::new(),
+        table: None,
         x_axis: quant_axis("month"),
         y_axis: quant_axis("value"),
         config: Config::default(),
@@ -147,6 +150,7 @@ fn grouped_bars_render_for_multiple_series() {
             Series { name: "b".to_string(), points: vec![(0.0, 1.0), (1.0, 4.0)], sizes: Vec::new() },
         ],
         slices: Vec::new(),
+        table: None,
         x_axis: quant_axis("g"),
         y_axis: quant_axis("v"),
         config: Config::default(),
@@ -166,6 +170,7 @@ fn categorical_axis_labels_appear() {
             sizes: Vec::new(),
         }],
         slices: Vec::new(),
+        table: None,
         x_axis: Axis {
             title: "month".to_string(),
             kind: AxisKind::Categorical(vec![
@@ -194,6 +199,7 @@ fn temporal_axis_formats_dates() {
             sizes: Vec::new(),
         }],
         slices: Vec::new(),
+        table: None,
         x_axis: Axis {
             title: "date".to_string(),
             kind: AxisKind::Temporal,
@@ -224,6 +230,7 @@ fn legend_disabled_hides_names() {
             Series { name: "beta".to_string(), points: vec![(0.0, 2.0), (1.0, 1.0)], sizes: Vec::new() },
         ],
         slices: Vec::new(),
+        table: None,
         x_axis: quant_axis("x"),
         y_axis: quant_axis("y"),
         config: Config::default(),
@@ -352,6 +359,7 @@ fn arc_renders_wedges_and_legend() {
             Slice { label: "south".to_string(), value: 10.0, color_index: 1 },
             Slice { label: "east".to_string(), value: 20.0, color_index: 2 },
         ],
+        table: None,
         x_axis: quant_axis(""),
         y_axis: quant_axis(""),
         config: Config::default(),
@@ -368,6 +376,7 @@ fn arc_with_no_slices_is_empty() {
         mark: Mark::Arc,
         series: Vec::new(),
         slices: Vec::new(),
+        table: None,
         x_axis: quant_axis(""),
         y_axis: quant_axis(""),
         config: Config::default(),
@@ -387,6 +396,7 @@ fn donut_inner_radius_differs_from_pie() {
             Slice { label: "a".to_string(), value: 1.0, color_index: 0 },
             Slice { label: "b".to_string(), value: 1.0, color_index: 1 },
         ],
+        table: None,
         x_axis: quant_axis(""),
         y_axis: quant_axis(""),
         config: Config::default(),
@@ -396,4 +406,52 @@ fn donut_inner_radius_differs_from_pie() {
     donut.config.inner_radius = Some(0.5);
     let donut_svg = render_ok(&donut);
     assert_ne!(pie_svg, donut_svg, "a donut hole must change the wedge geometry");
+}
+
+/// A small resolved table: two columns, two rows, in natural orientation.
+fn table_chart(transpose: bool) -> ResolvedChart {
+    ResolvedChart {
+        mark: Mark::Table,
+        series: Vec::new(),
+        slices: Vec::new(),
+        table: Some(TableView {
+            headers: vec!["month".to_string(), "revenue".to_string()],
+            rows: vec![
+                vec!["jan".to_string(), "100".to_string()],
+                vec!["feb".to_string(), "140".to_string()],
+            ],
+            transpose,
+        }),
+        x_axis: quant_axis(""),
+        y_axis: quant_axis(""),
+        config: Config::default(),
+    }
+}
+
+#[test]
+fn table_renders_grid_with_headers_and_cells() {
+    let svg = render_ok(&table_chart(false));
+    assert!(svg.contains("<svg"), "table must emit an svg");
+    assert!(svg.contains("<rect"), "grid cells need rectangles");
+    for needle in ["month", "revenue", "jan", "140"] {
+        assert!(svg.contains(needle), "table svg should contain `{needle}`");
+    }
+}
+
+#[test]
+fn transpose_changes_table_layout() {
+    let natural = render_ok(&table_chart(false));
+    let transposed = render_ok(&table_chart(true));
+    assert!(transposed.contains("month") && transposed.contains("140"));
+    assert_ne!(natural, transposed, "transposing must change the drawn grid");
+}
+
+#[test]
+fn table_with_no_view_is_empty() {
+    let mut chart = table_chart(false);
+    chart.table = None;
+    let err = PlottersSvg
+        .render(&chart, &Theme::default(), size())
+        .expect_err("a table mark without a TableView must error");
+    assert!(matches!(err, RenderError::Empty));
 }

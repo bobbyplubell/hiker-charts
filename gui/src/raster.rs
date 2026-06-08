@@ -90,6 +90,7 @@ mod tests {
                 sizes: Vec::new(),
             }],
             slices: Vec::new(),
+            table: None,
             x_axis: Axis {
                 title: "month".to_string(),
                 kind: AxisKind::Quantitative,

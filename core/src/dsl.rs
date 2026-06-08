@@ -26,6 +26,10 @@ pub struct ChartSpec {
     /// Angular channel: the per-slice magnitude summed per category for the `Arc` mark.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theta: Option<FieldDef>,
+    /// Columns to show, in order, for the `Table` mark. `None` => every column of the data
+    /// in its natural order. Ignored by every other mark (forward-compat: the value survives).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub columns: Option<Vec<String>>,
     /// Data identifier (e.g. "sales.csv"). `None` => the data Table is supplied
     /// directly (the inline CSV body of a chart block). Inline YAML `values` is
     /// deferred.
@@ -52,6 +56,10 @@ pub enum Mark {
     /// A radial pie/donut: each `color` category contributes a wedge sized by its summed
     /// `theta` value. Drawn without cartesian axes; `inner_radius` cuts a donut hole.
     Arc,
+    /// The data rendered as a grid rather than plotted. Uses no encoding channels; the
+    /// columns shown (and their order) come from `columns`, and `config.transpose` swaps
+    /// fields and records. Drawn without axes.
+    Table,
 }
 
 /// Bar/area drawing orientation. `Vertical` (the default) runs bars up from the x axis;
@@ -226,6 +234,10 @@ pub struct Config {
     /// Donut hole radius as a `0.0..=1.0` fraction of the outer radius (`Arc`); 0 = full pie.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inner_radius: Option<f32>,
+    /// Transpose the `Table` mark: draw fields down the left and records across as columns,
+    /// rather than the natural one-row-per-record layout. Ignored by other marks.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub transpose: bool,
     /// X-axis scale (log/sqrt/domain/zero); the linear identity applies when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x_scale: Option<Scale>,
@@ -259,6 +271,7 @@ impl Default for Config {
             orientation: None,
             bins: None,
             inner_radius: None,
+            transpose: false,
             x_scale: None,
             y_scale: None,
         }

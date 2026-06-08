@@ -118,6 +118,14 @@ pub const fn caps(mark: Mark) -> MarkCaps {
             channels: ChannelSet { color: true, theta: true, ..NO_CHANNELS },
             options: OptionSet { inner_radius: true, fill_opacity: true, ..NO_OPTIONS },
         },
+        // The table mark uses no encoding channels and no plotted options: which columns it
+        // shows (and the transpose toggle) are mark-specific controls the panel handles
+        // directly, not channels/options gated through the registry.
+        Mark::Table => MarkCaps {
+            cartesian: false,
+            channels: NO_CHANNELS,
+            options: NO_OPTIONS,
+        },
     }
 }
 
@@ -177,9 +185,26 @@ mod tests {
 
     #[test]
     fn no_mark_enables_scales_without_being_cartesian() {
-        for mark in [Mark::Bar, Mark::Line, Mark::Point, Mark::Area, Mark::Histogram, Mark::Arc] {
+        for mark in [
+            Mark::Bar,
+            Mark::Line,
+            Mark::Point,
+            Mark::Area,
+            Mark::Histogram,
+            Mark::Arc,
+            Mark::Table,
+        ] {
             let c = caps(mark);
             assert!(!c.options.scales || c.cartesian, "scales imply cartesian for {mark:?}");
         }
+    }
+
+    #[test]
+    fn table_is_noncartesian_with_no_channels_or_options() {
+        let c = caps(Mark::Table);
+        assert!(!c.cartesian);
+        assert!(!c.channels.x && !c.channels.y && !c.channels.color);
+        assert!(!c.channels.size && !c.channels.theta);
+        assert!(!c.options.stack && !c.options.scales && !c.options.fill_opacity);
     }
 }

@@ -6,10 +6,11 @@
 //! stable categorical index), rows with a missing x or y are dropped with a
 //! diagnostic, and axis kinds plus label maps are recorded for tick formatting.
 
-use crate::backend::{Axis, AxisKind, ResolvedChart, Series, Slice};
+use crate::backend::{Axis, AxisKind, ResolvedChart, Series, Slice, TableView};
 use crate::data::Table;
 use crate::diag::Diagnostic;
 use crate::dsl::{ChartSpec, DataType, Mark, Scale};
+use crate::display::format_value;
 use crate::registry::caps;
 use crate::typing::{coerce, infer_type, Value};
 
@@ -31,7 +32,67 @@ pub fn resolve(spec: &ChartSpec, table: &Table) -> Result<ResolvedChart, Vec<Dia
     if spec.mark == Mark::Histogram {
         return resolve_histogram(spec, table, diags);
     }
+    if spec.mark == Mark::Table {
+        return resolve_table(spec, table, diags);
+    }
     resolve_cartesian(spec, table, diags)
+}
+
+/// Resolve the `Table` mark: select columns (from `spec.columns`, defaulting to every column in
+/// natural order), coerce each cell by its inferred type, and format it to a display string so
+/// the backend only lays out text. Unknown column names are dropped with a warning. Errors when
+/// no column resolves (nothing to draw). The transpose flag rides along on the `TableView`.
+fn resolve_table(
+    spec: &ChartSpec,
+    table: &Table,
+    mut diags: Vec<Diagnostic>,
+) -> Result<ResolvedChart, Vec<Diagnostic>> {
+    let chosen: Vec<&str> = match &spec.columns {
+        Some(names) => names
+            .iter()
+            .filter(|name| {
+                let present = table.column(name).is_some();
+                if !present {
+                    diags.push(Diagnostic::warning(format!(
+                        "table column `{name}` is not in the data and was dropped"
+                    )));
+                }
+                present
+            })
+            .map(String::as_str)
+            .collect(),
+        None => table.columns.iter().map(|c| c.name.as_str()).collect(),
+    };
+    if chosen.is_empty() {
+        diags.push(Diagnostic::error("table has no columns to show"));
+        return Err(diags);
+    }
+
+    // Pre-coerce each chosen column once (inferred type per column), formatting cells as we go.
+    let formatted: Vec<Vec<String>> = chosen
+        .iter()
+        .map(|name| {
+            let col = table.column(name).expect("presence checked above");
+            let ty = infer_type(&col.cells);
+            col.cells.iter().map(|cell| format_value(&coerce(cell, ty))).collect()
+        })
+        .collect();
+
+    let headers: Vec<String> = chosen.iter().map(|s| (*s).to_string()).collect();
+    let row_count = formatted.iter().map(Vec::len).max().unwrap_or(0);
+    let rows: Vec<Vec<String>> = (0..row_count)
+        .map(|r| formatted.iter().map(|col| col.get(r).cloned().unwrap_or_default()).collect())
+        .collect();
+
+    Ok(ResolvedChart {
+        mark: spec.mark,
+        series: Vec::new(),
+        slices: Vec::new(),
+        table: Some(TableView { headers, rows, transpose: spec.config.transpose }),
+        x_axis: empty_axis(),
+        y_axis: empty_axis(),
+        config: spec.config.clone(),
+    })
 }
 
 /// Resolve a cartesian mark (`Bar`/`Line`/`Point`/`Area`): x + y series, sizes, and scaled
@@ -65,6 +126,7 @@ fn resolve_cartesian(
         mark: spec.mark,
         series,
         slices: Vec::new(),
+        table: None,
         x_axis,
         y_axis,
         config: spec.config.clone(),
@@ -435,6 +497,7 @@ fn resolve_histogram(
         mark: spec.mark,
         series: vec![Series { name: String::new(), points, sizes: Vec::new() }],
         slices: Vec::new(),
+        table: None,
         x_axis,
         y_axis,
         config: spec.config.clone(),
@@ -488,6 +551,7 @@ fn resolve_arc(
         mark: spec.mark,
         series: Vec::new(),
         slices,
+        table: None,
         x_axis: empty_axis(),
         y_axis: empty_axis(),
         config: spec.config.clone(),
@@ -590,6 +654,42 @@ mod tests {
         let spec = ChartSpec::from_yaml(spec_yaml).unwrap();
         let table = Table::from_csv(csv).unwrap();
         resolve(&spec, &table).unwrap()
+    }
+
+    #[test]
+    fn table_defaults_to_all_columns_and_formats_cells() {
+        let c = chart(
+            "mark: table\n",
+            b"day,revenue\n2021-01-01,1000\n2021-02-01,1400.5\n",
+        );
+        let t = c.table.expect("table mark resolves a TableView");
+        assert_eq!(t.headers, vec!["day", "revenue"]);
+        // Dates are formatted via the temporal inference; numbers normalized.
+        assert_eq!(t.rows, vec![
+            vec!["2021-01-01".to_string(), "1000".to_string()],
+            vec!["2021-02-01".to_string(), "1400.5".to_string()],
+        ]);
+        assert!(!t.transpose);
+        assert!(c.series.is_empty() && c.slices.is_empty());
+    }
+
+    #[test]
+    fn table_selects_and_orders_columns_dropping_unknowns() {
+        let c = chart(
+            "mark: table\ncolumns: [revenue, month, nope]\nconfig:\n  transpose: true\n",
+            b"month,revenue,profit\njan,100,20\nfeb,140,35\n",
+        );
+        let t = c.table.expect("table view");
+        assert_eq!(t.headers, vec!["revenue", "month"]);
+        assert_eq!(t.rows[0], vec!["100".to_string(), "jan".to_string()]);
+        assert!(t.transpose);
+    }
+
+    #[test]
+    fn table_with_no_known_columns_errors() {
+        let spec = ChartSpec::from_yaml("mark: table\ncolumns: [missing]\n").unwrap();
+        let table = Table::from_csv(b"month,revenue\njan,100\n").unwrap();
+        assert!(resolve(&spec, &table).is_err());
     }
 
     #[test]

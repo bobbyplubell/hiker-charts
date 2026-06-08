@@ -7,6 +7,7 @@
 //! `InputState` exactly as `hiker-canvas` does. See `IMPLEMENTATION.md` §6.
 
 pub mod camera;
+pub mod data_view;
 pub mod model;
 pub mod panel;
 pub mod preview;

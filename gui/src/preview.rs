@@ -26,6 +26,17 @@ use crate::model::BuilderState;
 /// The factor a single `+`/`-` keypress zooms by (matches hiker-canvas).
 const KEY_ZOOM_STEP: f32 = 1.2;
 
+/// Which pane the right side of the builder shows: the interactive chart preview, or the
+/// read-only parsed-data grid. Held across frames on [`View`] so the tab choice persists.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PaneMode {
+    /// The rendered chart, pan/zoomable (the default).
+    #[default]
+    Chart,
+    /// The source table with inferred types and coerced/formatted values.
+    Data,
+}
+
 /// Cross-frame state for the preview: the uploaded texture and the hash of the
 /// SVG that produced it, so the texture re-uploads only when the chart changes.
 #[derive(Default)]
@@ -38,13 +49,15 @@ pub struct View {
     /// a real viewport + content auto-fits so the whole chart is visible; after
     /// that the user's pan/zoom is left alone (re-fit on demand with the `0` key).
     fitted: bool,
+    /// Which pane (chart vs data) the right side currently shows.
+    pub mode: PaneMode,
 }
 
 impl View {
-    /// A fresh view with no texture uploaded yet.
+    /// A fresh view with no texture uploaded yet, showing the chart pane.
     #[must_use]
     pub const fn new() -> Self {
-        Self { texture: None, key: None, fitted: false }
+        Self { texture: None, key: None, fitted: false, mode: PaneMode::Chart }
     }
 }
 
