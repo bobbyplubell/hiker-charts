@@ -10,6 +10,7 @@
 
 use eframe::egui;
 use hiker_charts_core::backend::Size;
+use hiker_charts_core::block::parse_block;
 use hiker_charts_core::data::Table;
 use hiker_charts_core::dsl::ChartSpec;
 use hiker_charts_core::theme::Theme;
@@ -18,47 +19,67 @@ use hiker_charts_gui::model::BuilderState;
 use hiker_charts_gui::panel::{panel, ThemeChoice};
 use hiker_charts_gui::preview::View;
 
-/// A bundled demo dataset: a human label plus the CSV data and the initial chart
-/// spec to seed the builder with. Both are compiled in via `include_str!` so the
-/// demo runs from any working directory and needs no files on disk.
+/// Where a preset's data + starting spec come from. Both forms are compiled in via
+/// `include_str!` so the demo runs from any working directory with no files on disk.
+enum Source {
+    /// A separate CSV file and a separate `*.chart.yaml` spec file.
+    Pair { csv: &'static str, yaml: &'static str },
+    /// One self-contained chart block: YAML config, a `---` line, then inline CSV —
+    /// exactly the shape a host like Hiker embeds in a note (SPEC §8.3).
+    Block(&'static str),
+}
+
+/// A bundled demo dataset: a human label plus its data source.
 struct Preset {
     /// Label shown in the dataset dropdown.
     name: &'static str,
-    /// RFC 4180 CSV body parsed into the builder's `Table`.
-    csv: &'static str,
-    /// YAML `ChartSpec` giving the dataset its starting mark + encodings to mess with.
-    yaml: &'static str,
+    /// How the dataset's data and starting spec are supplied.
+    source: Source,
 }
 
-/// Convenience for one `examples/<stem>` pair: `preset!("Label", "stem")` expands to
-/// the CSV at `examples/<csv stem>.csv` and the spec at `examples/<stem>.chart.yaml`.
-macro_rules! preset {
+/// Convenience for one `examples/<stem>` pair: the CSV at `examples/<csv stem>.csv`
+/// and the spec at `examples/<spec stem>.chart.yaml`.
+macro_rules! pair {
     ($name:literal, $csv_stem:literal, $spec_stem:literal) => {
         Preset {
             name: $name,
-            csv: include_str!(concat!("../../examples/", $csv_stem, ".csv")),
-            yaml: include_str!(concat!("../../examples/", $spec_stem, ".chart.yaml")),
+            source: Source::Pair {
+                csv: include_str!(concat!("../../examples/", $csv_stem, ".csv")),
+                yaml: include_str!(concat!("../../examples/", $spec_stem, ".chart.yaml")),
+            },
+        }
+    };
+}
+
+/// Convenience for one self-contained `examples/<stem>.chart` block (config + `---` + CSV).
+macro_rules! block {
+    ($name:literal, $stem:literal) => {
+        Preset {
+            name: $name,
+            source: Source::Block(include_str!(concat!("../../examples/", $stem, ".chart"))),
         }
     };
 }
 
 /// The gallery of datasets + starting chart configs offered in the dropdown. Several
 /// share `sales.csv` to show how one dataset reshapes across marks; the rest bring
-/// their own data tuned to a particular chart type.
+/// their own data tuned to a particular chart type. The last entry is a single
+/// self-contained block with its CSV defined inline.
 const PRESETS: &[Preset] = &[
-    preset!("Monthly sales — line", "sales", "sales"),
-    preset!("Revenue vs profit — grouped bars", "sales", "bars"),
-    preset!("Monthly sales — stacked bars", "sales", "stacked-bars"),
-    preset!("Monthly sales — step line", "sales", "step-line"),
-    preset!("Revenue vs month — bubble", "sales", "bubble"),
-    preset!("Revenue — log y axis", "sales", "log-scale"),
-    preset!("Revenue share — donut", "sales", "donut"),
-    preset!("Iris — scatter (color + size)", "iris", "iris"),
-    preset!("Web traffic — stacked area", "traffic", "traffic"),
-    preset!("Daily temperature — area band", "weather", "weather"),
-    preset!("Exam scores — histogram", "scores", "scores"),
-    preset!("Browser share — donut", "browsers", "browsers"),
-    preset!("World population — horizontal bars", "population", "population"),
+    pair!("Monthly sales — line", "sales", "sales"),
+    pair!("Revenue vs profit — grouped bars", "sales", "bars"),
+    pair!("Monthly sales — stacked bars", "sales", "stacked-bars"),
+    pair!("Monthly sales — step line", "sales", "step-line"),
+    pair!("Revenue vs month — bubble", "sales", "bubble"),
+    pair!("Revenue — log y axis", "sales", "log-scale"),
+    pair!("Revenue share — donut", "sales", "donut"),
+    pair!("Iris — scatter (color + size)", "iris", "iris"),
+    pair!("Web traffic — stacked area", "traffic", "traffic"),
+    pair!("Daily temperature — area band", "weather", "weather"),
+    pair!("Exam scores — histogram", "scores", "scores"),
+    pair!("Browser share — donut", "browsers", "browsers"),
+    pair!("World population — horizontal bars", "population", "population"),
+    block!("Signups vs churn — inline CSV", "inline"),
 ];
 
 /// The canvas size every preset renders at.
@@ -102,12 +123,23 @@ impl Demo {
 
 /// Build a fresh `BuilderState` from preset `idx`, carrying the host's current theme
 /// choice so a dataset switch doesn't drop the user's light/dark + palette selection.
+/// A `Pair` preset parses its separate CSV + spec; a `Block` preset parses one
+/// self-contained block (config + `---` + inline CSV) through the core block parser —
+/// the same path a host uses for an inline chart block.
 fn load_preset(idx: usize, theme: ThemeChoice) -> BuilderState {
-    let preset = &PRESETS[idx];
-    let table = Table::from_csv(preset.csv.as_bytes()).expect("bundled preset csv parses");
-    let spec = ChartSpec::from_yaml(preset.yaml).expect("bundled preset spec parses");
     let resolved = Theme::from_dark_mode(theme.dark).with_palette(theme.palette);
-    BuilderState::new(spec, table, resolved, CANVAS)
+    match &PRESETS[idx].source {
+        Source::Pair { csv, yaml } => {
+            let table = Table::from_csv(csv.as_bytes()).expect("bundled preset csv parses");
+            let spec = ChartSpec::from_yaml(yaml).expect("bundled preset spec parses");
+            BuilderState::new(spec, table, resolved, CANVAS)
+        }
+        Source::Block(body) => {
+            let parsed = parse_block(body).expect("bundled inline block parses");
+            let table = parsed.table.expect("inline block carries its CSV");
+            BuilderState::new(parsed.spec, table, resolved, CANVAS)
+        }
+    }
 }
 
 impl eframe::App for Demo {

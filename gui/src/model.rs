@@ -17,6 +17,7 @@
 use std::ops::Range;
 
 use hiker_charts_core::backend::{Backend, RenderOutput, Size};
+use hiker_charts_core::block::parse_block;
 use hiker_charts_core::data::Table;
 use hiker_charts_core::dsl::{
     ChartSpec, DataType, FieldDef, FieldSpec, Interpolate, Mark, Orientation, Scale, ScaleKind,
@@ -102,6 +103,37 @@ impl BuilderState {
             theme,
             size,
             csv_body,
+            provenance: Some(prov),
+            cache: None,
+        })
+    }
+
+    /// Open a self-contained chart block — the YAML config, a `---` line, then a raw
+    /// CSV body (SPEC §8.3) — splitting and parsing it in one step via
+    /// [`hiker_charts_core::block::parse_block`]. This is the read half of the
+    /// round-trip [`save_block`](Self::save_block) writes: the inline CSV becomes the
+    /// builder's table and is retained verbatim for re-attachment on save. Returns an
+    /// error message if the config or CSV is malformed, or if the block carries no
+    /// `---` data section (use [`from_block`](Self::from_block) with a host-resolved
+    /// table for an external-`data:` block).
+    pub fn from_block_body(
+        body: &str,
+        prov: Provenance,
+        theme: Theme,
+        size: Size,
+    ) -> Result<Self, String> {
+        let parsed = parse_block(body).map_err(|diags| {
+            diags.into_iter().map(|d| d.message).collect::<Vec<_>>().join("; ")
+        })?;
+        let table = parsed
+            .table
+            .ok_or("chart block has no inline data (expected a `---` line followed by CSV)")?;
+        Ok(Self {
+            spec: parsed.spec,
+            table,
+            theme,
+            size,
+            csv_body: parsed.csv_body,
             provenance: Some(prov),
             cache: None,
         })
@@ -659,6 +691,42 @@ mod tests {
     #[test]
     fn save_block_none_without_provenance() {
         assert!(state().save_block().is_none());
+    }
+
+    #[test]
+    fn from_block_body_parses_inline_csv_and_round_trips() {
+        let body = "mark: bar\nx: month\ny: revenue\n---\nmonth,revenue\njan,100\nfeb,140\n";
+        let prov = Provenance { note_id: "n1".to_string(), byte_range: 0..body.len() };
+        let s = BuilderState::from_block_body(
+            body,
+            prov,
+            Theme::default(),
+            Size { width: 320, height: 240 },
+        )
+        .expect("inline-csv block opens");
+        // The inline CSV became the builder's table.
+        assert_eq!(s.columns(), vec!["month", "revenue"]);
+        assert_eq!(s.spec().mark, Mark::Bar);
+        // Save re-emits the `---` + CSV shape the read half just consumed: the data
+        // bytes survive verbatim, so open→save is a faithful round-trip.
+        let (saved, _) = s.save_block().expect("provenance present");
+        assert!(saved.contains("---\n"));
+        assert!(saved.ends_with("month,revenue\njan,100\nfeb,140\n"));
+    }
+
+    #[test]
+    fn from_block_body_errors_without_inline_data() {
+        let prov = Provenance { note_id: "n1".to_string(), byte_range: 0..0 };
+        let result = BuilderState::from_block_body(
+            "mark: bar\nx: a\ny: b\ndata: sales.csv\n",
+            prov,
+            Theme::default(),
+            Size { width: 320, height: 240 },
+        );
+        match result {
+            Err(err) => assert!(err.contains("no inline data"), "got: {err}"),
+            Ok(_) => panic!("a block without inline data should not open"),
+        }
     }
 
     #[test]

@@ -8,6 +8,7 @@
 use std::io::Write;
 
 use hiker_charts_core::backend::{Backend, Size};
+use hiker_charts_core::block::parse_block;
 use hiker_charts_core::diag::{Diagnostic, Severity};
 use hiker_charts_core::dsl::ChartSpec;
 use hiker_charts_core::data::Table;
@@ -18,11 +19,14 @@ use hiker_charts_plotters::PlottersSvg;
 /// The pixel size every chart is painted into (SPEC default canvas).
 const CANVAS: Size = Size { width: 800, height: 500 };
 
-/// Parsed command line: the two input paths plus an optional output path.
-struct Args {
-    spec_path: String,
-    data_path: String,
-    out_path: Option<String>,
+/// Parsed command line: the input(s) plus an optional output path. A chart block
+/// (config + `---` + inline CSV) is given as a single file; an external-data chart
+/// is a spec file plus a separate CSV file.
+enum Args {
+    /// One self-contained block file carrying both config and inline CSV.
+    Block { block_path: String, out_path: Option<String> },
+    /// A spec file and a separate CSV data file.
+    Pair { spec_path: String, data_path: String, out_path: Option<String> },
 }
 
 fn main() {
@@ -34,13 +38,38 @@ fn main() {
 
 /// Parse args, read the inputs, render, and write the SVG to `-o` or stdout.
 fn run(argv: Vec<String>) -> Result<(), String> {
-    let args = parse_args(argv)?;
-    let spec_yaml = std::fs::read_to_string(&args.spec_path)
-        .map_err(|e| format!("reading spec `{}`: {e}", args.spec_path))?;
-    let csv = std::fs::read(&args.data_path)
-        .map_err(|e| format!("reading data `{}`: {e}", args.data_path))?;
-    let svg = render_svg(&spec_yaml, &csv)?;
-    write_output(args.out_path.as_deref(), &svg)
+    match parse_args(argv)? {
+        Args::Block { block_path, out_path } => {
+            let body = std::fs::read_to_string(&block_path)
+                .map_err(|e| format!("reading block `{block_path}`: {e}"))?;
+            let svg = render_block(&body)?;
+            write_output(out_path.as_deref(), &svg)
+        }
+        Args::Pair { spec_path, data_path, out_path } => {
+            let spec_yaml = std::fs::read_to_string(&spec_path)
+                .map_err(|e| format!("reading spec `{spec_path}`: {e}"))?;
+            let csv = std::fs::read(&data_path)
+                .map_err(|e| format!("reading data `{data_path}`: {e}"))?;
+            let svg = render_svg(&spec_yaml, &csv)?;
+            write_output(out_path.as_deref(), &svg)
+        }
+    }
+}
+
+/// Render a self-contained chart block (config + `---` + inline CSV) to an SVG. The
+/// block must carry its data inline; a block with no `---` section has no data to
+/// plot from the CLI (it would reference an external `data:` file a host resolves).
+/// Path-free so it can be unit-tested without touching the filesystem.
+fn render_block(body: &str) -> Result<String, String> {
+    let parsed = parse_block(body).map_err(|diags| format_diagnostics(&diags))?;
+    let table = parsed
+        .table
+        .ok_or("block has no inline data (expected a `---` line followed by CSV)")?;
+    let chart = resolve(&parsed.spec, &table).map_err(|diags| format_diagnostics(&diags))?;
+    let output = PlottersSvg
+        .render(&chart, &Theme::default(), CANVAS)
+        .map_err(|e| format!("rendering chart: {e}"))?;
+    Ok(output.svg)
 }
 
 /// Turn the YAML spec and CSV bytes into an SVG string, mapping every failure to a
@@ -55,7 +84,9 @@ fn render_svg(spec_yaml: &str, csv: &[u8]) -> Result<String, String> {
     Ok(output.svg)
 }
 
-/// Parse `<spec.yaml> <data.csv> [-o <out.svg>]` from the argument list (no clap).
+/// Parse `<block.chart>` or `<spec.yaml> <data.csv>`, plus an optional `-o <out.svg>`,
+/// from the argument list (no clap). One positional is a self-contained block with
+/// inline CSV; two are a spec and a separate data file.
 fn parse_args(argv: Vec<String>) -> Result<Args, String> {
     let mut positional: Vec<String> = Vec::new();
     let mut out_path: Option<String> = None;
@@ -73,19 +104,14 @@ fn parse_args(argv: Vec<String>) -> Result<Args, String> {
             _ => positional.push(arg),
         }
     }
-    if positional.len() != 2 {
-        return Err(format!(
-            "expected a spec and a data path, got {}\n{}",
-            positional.len(),
-            usage()
-        ));
-    }
     let mut paths = positional.into_iter();
-    Ok(Args {
-        spec_path: paths.next().unwrap_or_default(),
-        data_path: paths.next().unwrap_or_default(),
-        out_path,
-    })
+    match (paths.next(), paths.next(), paths.next()) {
+        (Some(block_path), None, _) => Ok(Args::Block { block_path, out_path }),
+        (Some(spec_path), Some(data_path), None) => {
+            Ok(Args::Pair { spec_path, data_path, out_path })
+        }
+        _ => Err(format!("expected a block file, or a spec and a data path\n{}", usage())),
+    }
 }
 
 /// Write the SVG to the given path, or to stdout when no path was supplied.
@@ -115,22 +141,35 @@ fn format_diagnostics(diags: &[Diagnostic]) -> String {
 
 /// The usage line shown on argument errors and `--help`.
 fn usage() -> String {
-    "usage: hiker-charts <spec.yaml> <data.csv> [-o <out.svg>]".to_string()
+    "usage: hiker-charts <block.chart> [-o <out.svg>]\n   or: hiker-charts <spec.yaml> <data.csv> [-o <out.svg>]".to_string()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{format_diagnostics, parse_args, render_svg};
+    use super::{format_diagnostics, parse_args, render_block, render_svg, Args};
     use hiker_charts_core::diag::Diagnostic;
 
     const SPEC: &str = "mark: line\nx: month\ny: revenue\n";
     const CSV: &str = "month,revenue\n2024-01,10\n2024-02,20\n2024-03,15\n";
+    const BLOCK: &str = "mark: line\nx: month\ny: revenue\n---\nmonth,revenue\n2024-01,10\n2024-02,20\n";
 
     #[test]
     fn render_path_produces_non_empty_svg() {
         let svg = render_svg(SPEC, CSV.as_bytes()).expect("render should succeed");
         assert!(svg.contains("<svg"), "output should be an SVG document");
         assert!(svg.len() > 100, "SVG should have real content");
+    }
+
+    #[test]
+    fn render_block_with_inline_csv_produces_svg() {
+        let svg = render_block(BLOCK).expect("inline block should render");
+        assert!(svg.contains("<svg"), "output should be an SVG document");
+    }
+
+    #[test]
+    fn render_block_without_data_is_an_error() {
+        let err = render_block("mark: line\nx: month\ny: revenue\n").unwrap_err();
+        assert!(err.contains("no inline data"), "got: {err}");
     }
 
     #[test]
@@ -146,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_args_reads_output_flag() {
+    fn parse_args_reads_pair_with_output_flag() {
         let args = parse_args(vec![
             "spec.yaml".into(),
             "data.csv".into(),
@@ -154,15 +193,34 @@ mod tests {
             "out.svg".into(),
         ])
         .expect("valid args");
-        assert_eq!(args.spec_path, "spec.yaml");
-        assert_eq!(args.data_path, "data.csv");
-        assert_eq!(args.out_path.as_deref(), Some("out.svg"));
+        match args {
+            Args::Pair { spec_path, data_path, out_path } => {
+                assert_eq!(spec_path, "spec.yaml");
+                assert_eq!(data_path, "data.csv");
+                assert_eq!(out_path.as_deref(), Some("out.svg"));
+            }
+            Args::Block { .. } => panic!("two positionals should parse as a pair"),
+        }
     }
 
     #[test]
-    fn parse_args_requires_two_positionals() {
-        assert!(parse_args(vec!["only-one.yaml".into()]).is_err());
+    fn parse_args_reads_single_block_file() {
+        let args = parse_args(vec!["chart.block".into(), "-o".into(), "out.svg".into()])
+            .expect("valid args");
+        match args {
+            Args::Block { block_path, out_path } => {
+                assert_eq!(block_path, "chart.block");
+                assert_eq!(out_path.as_deref(), Some("out.svg"));
+            }
+            Args::Pair { .. } => panic!("one positional should parse as a block"),
+        }
+    }
+
+    #[test]
+    fn parse_args_requires_at_least_one_positional() {
+        assert!(parse_args(vec![]).is_err());
         assert!(parse_args(vec!["-o".into(), "out.svg".into()]).is_err());
+        assert!(parse_args(vec!["a".into(), "b".into(), "c".into()]).is_err());
     }
 
     #[test]

@@ -1,0 +1,12 @@
+mark: bar
+x: { field: quarter, type: ordinal }
+y: [signups, churn]
+config:
+  title: Quarterly signups vs churn (inline data)
+  legend: true
+---
+quarter,signups,churn
+Q1,320,40
+Q2,410,55
+Q3,505,62
+Q4,640,71
