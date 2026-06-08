@@ -1,0 +1,11 @@
+mark: point
+x: { field: sepal_length, type: quantitative }
+y: petal_length
+color: { field: species, type: nominal }
+size: petal_width
+config:
+  title: Iris — petal vs sepal length (size = petal width)
+  x_title: Sepal length (cm)
+  y_title: Petal length (cm)
+  legend: true
+  point_size: 7

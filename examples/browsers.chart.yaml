@@ -1,0 +1,7 @@
+mark: arc
+theta: share
+color: { field: browser, type: nominal }
+config:
+  title: Browser market share (%)
+  legend: true
+  inner_radius: 0.55

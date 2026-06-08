@@ -1,0 +1,8 @@
+mark: bar
+x: { field: country, type: nominal }
+y: population
+config:
+  title: Most populous countries (millions, 2023)
+  x_title: Population (millions)
+  legend: false
+  orientation: horizontal

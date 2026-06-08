@@ -1,0 +1,10 @@
+mark: area
+x: { field: day, type: temporal }
+y: [high, low]
+config:
+  title: Daily temperature range (July)
+  x_title: Day
+  y_title: Temperature (°F)
+  legend: true
+  fill_opacity: 0.4
+  line_width: 2

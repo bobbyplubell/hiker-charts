@@ -1,0 +1,10 @@
+mark: area
+x: { field: month, type: temporal }
+y: [organic, paid, social]
+config:
+  title: Web traffic by channel (stacked)
+  x_title: Month
+  y_title: Sessions
+  legend: true
+  stack: true
+  fill_opacity: 0.85
